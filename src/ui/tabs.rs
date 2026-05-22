@@ -28,7 +28,7 @@ pub fn tab_with_position(
     let left_border = matches!(position, TabPosition::First | TabPosition::Only);
     div()
         .id(id)
-        .h(spacing.fixed32())
+        .h(spacing.fixed24())
         .min_w(px(128.0))
         .max_w(px(220.0))
         .px(spacing.base08())
@@ -75,7 +75,7 @@ pub fn tab_shell(
     let left_border = matches!(position, TabPosition::First | TabPosition::Only);
     div()
         .id(id)
-        .h(spacing.fixed32())
+        .h(spacing.fixed24())
         .min_w(px(128.0))
         .max_w(px(220.0))
         .px(spacing.base08())
@@ -185,7 +185,7 @@ pub fn context_menu_item(
 pub fn tab_bar(theme: AppTheme) -> Stateful<Div> {
     h_flex()
         .id("tab-bar")
-        .h(Spacing::app().fixed32())
+        .h(px(28.0))
         .w_full()
         .flex_none()
         .overflow_x_scroll()

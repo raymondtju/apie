@@ -32,8 +32,8 @@ mod tests {
     #[test]
     fn button_sizes_match_expected_heights() {
         assert_eq!(ButtonSize::Large.height(), px(32.0));
-        assert_eq!(ButtonSize::Medium.height(), px(28.0));
-        assert_eq!(ButtonSize::Default.height(), px(22.0));
+        assert_eq!(ButtonSize::Medium.height(), px(24.0));
+        assert_eq!(ButtonSize::Default.height(), px(24.0));
         assert_eq!(ButtonSize::Compact.height(), px(18.0));
     }
 }

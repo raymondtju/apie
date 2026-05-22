@@ -31,8 +31,8 @@ impl ButtonSize {
     pub fn height(self) -> Pixels {
         match self {
             Self::Large => px(32.0),
-            Self::Medium => px(28.0),
-            Self::Default => px(22.0),
+            Self::Medium => px(24.0),
+            Self::Default => px(24.0),
             Self::Compact => px(18.0),
         }
     }

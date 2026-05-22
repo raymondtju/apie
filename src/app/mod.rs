@@ -1051,7 +1051,11 @@ impl Request {
 
     fn to_domain_with_history(&self) -> domain::Request {
         let mut request = self.to_domain();
-        request.history = self.history.iter().map(ResponseRecord::to_domain).collect();
+        if self.response_pinned {
+            request.history = self.history.iter().map(ResponseRecord::to_domain).collect();
+        } else {
+            request.history.clear();
+        }
         request
     }
 
@@ -1216,6 +1220,53 @@ fn response_body_for_mode(body: &str, mode: BodyViewMode) -> SharedString {
             .and_then(|value| serde_json::to_string_pretty(&value))
             .unwrap_or_else(|_| body.to_string())
             .into(),
+    }
+}
+
+fn format_byte_count(bytes: usize) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[0])
+    } else {
+        format!("{value:.2} {}", UNITS[unit])
+    }
+}
+
+fn suggest_response_filename(response: &ResponseRecord) -> String {
+    let extension = response
+        .headers
+        .iter()
+        .find(|header| header.name.eq_ignore_ascii_case("content-type"))
+        .map(|header| extension_for_content_type(header.value.as_ref()))
+        .unwrap_or("txt");
+    format!("response-{}.{}", response.status, extension)
+}
+
+fn extension_for_content_type(content_type: &str) -> &'static str {
+    let lowered = content_type.to_ascii_lowercase();
+    let head = lowered.split(';').next().unwrap_or("").trim();
+    match head {
+        "application/json" | "application/problem+json" => "json",
+        "application/xml" | "text/xml" => "xml",
+        "text/html" => "html",
+        "text/css" => "css",
+        "text/javascript" | "application/javascript" => "js",
+        "text/csv" => "csv",
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/svg+xml" => "svg",
+        "application/pdf" => "pdf",
+        "application/zip" => "zip",
+        "application/octet-stream" => "bin",
+        s if s.starts_with("text/") => "txt",
+        _ => "txt",
     }
 }
 
@@ -5184,13 +5235,16 @@ impl ApiClientApp {
                             .gap(spacing.cluster_gap())
                             .text_ui_sm(typography)
                             .child(self.render_body_view_select(theme, typography, cx))
-                            .when_some(status_meta, |this, (status_color, status_text, duration, size)| {
-                                this.child(
-                                    div()
-                                        .debug_selector(|| "response-status-meta".into())
-                                        .font_weight(gpui::FontWeight::BOLD)
-                                        .text_color(status_color)
-                                        .child(status_text),
+                            .child(self.render_pin_response_button(theme, cx))
+                            .when_some(
+                                status_meta,
+                                |this, (status_color, status_text, duration, size)| {
+                                    this.child(
+                                        div()
+                                            .debug_selector(|| "response-status-meta".into())
+                                            .font_weight(gpui::FontWeight::BOLD)
+                                            .text_color(status_color)
+                                            .child(status_text),
                                 )
                                 .child(
                                     div()
@@ -5260,6 +5314,68 @@ impl ApiClientApp {
         }))
     }
 
+    fn formatted_body_for(&mut self, request_id: usize, response: &ResponseRecord) -> SharedString {
+        let mode = self.body_view_mode;
+        if let Some(cache) = self.formatted_body_cache.as_ref() {
+            if cache.matches(request_id, mode, &response.body) {
+                return cache.formatted.clone();
+            }
+        }
+        let formatted = response_body_for_mode(response.body.as_ref(), mode);
+        self.formatted_body_cache = Some(FormattedBodyCache {
+            request_id,
+            mode,
+            body_ptr: response.body.as_ref().as_ptr(),
+            body_len: response.body.len(),
+            formatted: formatted.clone(),
+        });
+        formatted
+    }
+
+    fn render_pin_response_button(
+        &self,
+        theme: AppTheme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let pinned = self
+            .active_request()
+            .map(|request| request.response_pinned)
+            .unwrap_or(false);
+        let label = if pinned { "Pinned" } else { "Pin" };
+        Self::render_scoped_button(
+            "pin-response",
+            label,
+            pinned,
+            if pinned {
+                ButtonStyle::Tinted(ui::TintColor::Accent)
+            } else {
+                ButtonStyle::Transparent
+            },
+            theme,
+            Self::toggle_pin_active_response,
+            cx,
+        )
+    }
+
+    fn toggle_pin_active_response(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(request) = self.active_request_mut() {
+            request.response_pinned = !request.response_pinned;
+            let pinned = request.response_pinned;
+            self.status_line = if pinned {
+                "Pinned response. Future history will persist to disk.".into()
+            } else {
+                "Unpinned response. Bodies will be session-only.".into()
+            };
+            self.persist_workspace();
+            cx.notify();
+        }
+    }
+
     fn render_response_body(
         &mut self,
         request_id: usize,
@@ -5269,13 +5385,24 @@ impl ApiClientApp {
     ) -> AnyElement {
         let typography = self.typography();
         let spacing = Spacing::app();
-        let body = response_body_for_mode(response.body.as_ref(), self.body_view_mode);
+
+        if response.body.len() > MAX_INLINE_RESPONSE_BODY_BYTES {
+            return self.render_oversize_response_placeholder(response, theme, cx);
+        }
+
+        let body = self.formatted_body_for(request_id, response);
         let response_code_input =
             self.response_body_input(request_id, self.body_view_mode, body.clone(), cx);
         response_code_input.update(cx, |input, _cx| {
             input.set_placeholder_color(theme.text_placeholder);
             input.set_syntax_colors(Self::syntax_colors_for_theme(theme));
         });
+        let scroll_handle = self.response_scroll_handle.clone();
+        self.response_scrollbar.update(cx, |scrollbar, _cx| {
+            scrollbar.set_colors(theme.border_variant, theme.text_muted);
+            scrollbar.set_code_input(response_code_input.downgrade());
+        });
+        let scrollbar = ui::vertical_scrollbar(&self.response_scrollbar);
         div()
             .flex()
             .flex_col()
@@ -5284,19 +5411,105 @@ impl ApiClientApp {
             .bg(theme.surface_background)
             .child(
                 div()
-                    .id("response-body-code-scroll")
-                    .debug_selector(|| "response-body-code-scroll".into())
-                    .flex()
-                    .flex_col()
-                    .h_full()
-                    .overflow_scroll()
-                    .p(spacing.base08())
-                    .font_family(ui::JETBRAINS_FONT_FAMILY)
-                    .text_buffer(typography)
-                    .text_color(theme.editor_text)
-                    .child(response_code_input),
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        div()
+                            .id("response-body-code-scroll")
+                            .debug_selector(|| "response-body-code-scroll".into())
+                            .flex()
+                            .flex_col()
+                            .h_full()
+                            .overflow_scroll()
+                            .track_scroll(&scroll_handle)
+                            .p(spacing.base08())
+                            .font_family(ui::JETBRAINS_FONT_FAMILY)
+                            .text_buffer(typography)
+                            .text_color(theme.editor_text)
+                            .child(response_code_input),
+                    )
+                    .child(scrollbar),
             )
             .into_any_element()
+    }
+
+    fn render_oversize_response_placeholder(
+        &self,
+        response: &ResponseRecord,
+        theme: AppTheme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let typography = self.typography();
+        let spacing = Spacing::app();
+        let size_label = format_byte_count(response.body.len());
+        let body = response.body.clone();
+        let suggested_name = suggest_response_filename(response);
+        div()
+            .debug_selector(|| "response-body-oversize-placeholder".into())
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(spacing.component_gap())
+            .flex_1()
+            .min_h_0()
+            .p(spacing.base12())
+            .bg(theme.surface_background)
+            .child(
+                div()
+                    .text_color(theme.text)
+                    .text_ui(typography)
+                    .child(SharedString::from(format!(
+                        "Body too large to render inline ({size_label})."
+                    ))),
+            )
+            .child(
+                div()
+                    .text_color(theme.text_muted)
+                    .text_ui_sm(typography)
+                    .child(SharedString::from(
+                        "Save the body to a file to inspect it with another tool.",
+                    )),
+            )
+            .child(Self::render_button(
+                "Save to file",
+                false,
+                ButtonStyle::Filled,
+                theme,
+                move |this, _event, _window, cx| {
+                    this.save_response_body_to_file(body.clone(), suggested_name.clone(), cx);
+                },
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    fn save_response_body_to_file(
+        &self,
+        body: SharedString,
+        suggested_name: String,
+        cx: &mut Context<Self>,
+    ) {
+        let receiver =
+            cx.prompt_for_new_path(std::path::Path::new(""), Some(suggested_name.as_str()));
+        cx.spawn(async move |this, cx| {
+            let Ok(result) = receiver.await else {
+                return;
+            };
+            let Ok(Some(path)) = result else {
+                return;
+            };
+            let write_result = std::fs::write(&path, body.as_bytes());
+            let _ = this.update(cx, |app, cx| {
+                app.status_line = match write_result {
+                    Ok(()) => format!("Saved response body to {}", path.display()).into(),
+                    Err(error) => format!("Failed to save response body: {error}").into(),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn render_response_header_list(

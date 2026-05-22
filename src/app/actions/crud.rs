@@ -689,4 +689,16 @@ impl ApiClientApp {
         self.status_line = "Copied response header value.".into();
         cx.notify();
     }
+
+    pub(crate) fn copy_response_header_value_on_mouse_down(
+        &mut self,
+        value: SharedString,
+        _: &MouseDownEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.write_to_clipboard(ClipboardItem::new_string(value.to_string()));
+        self.status_line = "Copied response header value.".into();
+        cx.notify();
+    }
 }

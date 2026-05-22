@@ -1993,6 +1993,8 @@ impl ApiClientApp {
     ) -> AnyElement {
         let spacing = Spacing::app();
         div()
+            .flex()
+            .flex_col()
             .flex_1()
             .min_h_0()
             .bg(theme.surface_background)
@@ -2032,7 +2034,8 @@ impl ApiClientApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + '_ {
         let spacing = Spacing::app();
-        let value = header.value.clone();
+        let value_for_text = header.value.clone();
+        let value_for_icon = value_for_text.clone();
         let copy_selector = format!("response-header-copy-{index}");
         div()
             .flex()
@@ -2055,6 +2058,9 @@ impl ApiClientApp {
                     .px(spacing.base12())
                     .py(spacing.base08())
                     .text_color(theme.text_muted)
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, event, window, cx| {
+                        this.copy_response_header_value_on_mouse_down(value_for_text.clone(), event, window, cx)
+                    }))
                     .child(header.value.clone()),
             )
             .child(
@@ -2072,7 +2078,7 @@ impl ApiClientApp {
                         .debug_selector(move || copy_selector.clone())
                         .on_click(cx.listener(
                             move |this, event, window, cx| {
-                                this.copy_response_header_value(value.clone(), event, window, cx)
+                                this.copy_response_header_value(value_for_icon.clone(), event, window, cx)
                             },
                         )),
                     ),

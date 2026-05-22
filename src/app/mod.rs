@@ -14,9 +14,37 @@ use apie as domain;
 use gpui::{
     AnyElement, App, ClipboardItem, Context, Corner, CursorStyle, Div, Entity, FocusHandle,
     Focusable, InteractiveElement, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, Render, ResizeEdge, SharedString, StatefulInteractiveElement,
-    Window, WindowControlArea, actions, anchored, deferred, div, point, prelude::*, px, rgb,
+    MouseUpEvent, Pixels, Point, Render, ResizeEdge, ScrollHandle, SharedString,
+    StatefulInteractiveElement, Window, WindowControlArea, actions, anchored, deferred, div, point,
+    prelude::*, px, rgb,
 };
+
+/// Above this byte count, the response panel skips rendering the body
+/// inline and shows a "Body too large to render inline" placeholder
+/// with a Save to file action. Picked to keep the UI thread under ~16ms
+/// even for pathologically minified payloads. Mirrors Zed's
+/// `MAX_LINE_LEN_FOR_INLINE_RENDER` style guard from `crates/editor/`.
+const MAX_INLINE_RESPONSE_BODY_BYTES: usize = 2 * 1024 * 1024;
+
+/// Cache for the most recently formatted response body. Keyed by the
+/// pointer identity of the underlying `SharedString` storage so that
+/// reuse across renders is O(1) and never re-runs the JSON parser.
+struct FormattedBodyCache {
+    request_id: usize,
+    mode: BodyViewMode,
+    body_ptr: *const u8,
+    body_len: usize,
+    formatted: SharedString,
+}
+
+impl FormattedBodyCache {
+    fn matches(&self, request_id: usize, mode: BodyViewMode, body: &SharedString) -> bool {
+        self.request_id == request_id
+            && self.mode == mode
+            && self.body_len == body.len()
+            && std::ptr::eq(self.body_ptr, body.as_ref().as_ptr())
+    }
+}
 
 actions!(
     api_client,
@@ -258,6 +286,10 @@ struct Request {
     body: SharedString,
     response: Option<ResponseRecord>,
     history: Vec<ResponseRecord>,
+    /// When set, the latest response body and history are persisted to
+    /// disk. By default response bodies are session-only to keep the
+    /// workspace JSON small and writes off the UI thread fast.
+    response_pinned: bool,
 }
 
 #[derive(Clone)]
@@ -959,6 +991,7 @@ impl Request {
             body: body.into(),
             response,
             history,
+            response_pinned: false,
         }
     }
 
@@ -1376,6 +1409,15 @@ pub(crate) struct ApiClientApp {
     suppress_collection_click: bool,
     body_inputs: BTreeMap<usize, Entity<CodeInput>>,
     response_body_inputs: BTreeMap<(usize, BodyViewMode), Entity<CodeInput>>,
+    response_scroll_handle: ScrollHandle,
+    response_scrollbar: Entity<ui::VerticalScrollbar>,
+    formatted_body_cache: Option<FormattedBodyCache>,
+    in_flight_requests: BTreeMap<usize, InFlightRequest>,
+}
+
+struct InFlightRequest {
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    _task: gpui::Task<()>,
 }
 
 impl ApiClientApp {
@@ -1409,6 +1451,9 @@ impl ApiClientApp {
             .unwrap_or_else(|| "".into());
         let url_input =
             cx.new(|cx| TextInput::new(cx, initial_url, "Paste URL or use {{base_url}}/path"));
+        let response_scroll_handle = ScrollHandle::new();
+        let response_scrollbar =
+            cx.new(|_| ui::VerticalScrollbar::new(response_scroll_handle.clone()));
         let settings = load_app_settings(&settings_path).unwrap_or_default();
         let theme_mode = Self::theme_mode_from_settings(settings, cx);
         Self {
@@ -1453,7 +1498,11 @@ impl ApiClientApp {
             suppress_collection_click: false,
             body_inputs: BTreeMap::new(),
             response_body_inputs: BTreeMap::new(),
+            response_scroll_handle,
+            response_scrollbar,
             expanded_folders,
+            formatted_body_cache: None,
+            in_flight_requests: BTreeMap::new(),
         }
     }
 
@@ -1544,7 +1593,7 @@ impl ApiClientApp {
             .clone();
         input.update(cx, |input, cx| {
             input.set_placeholder("Response body is empty.");
-            if input.value() != content.as_ref() {
+            if !input.content_eq(&content) {
                 input.set_content(content.clone(), cx);
             }
         });
@@ -2045,6 +2094,7 @@ impl ApiClientApp {
             body: "".into(),
             response: None,
             history: vec![],
+            response_pinned: false,
         }
     }
 

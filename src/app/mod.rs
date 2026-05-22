@@ -2215,7 +2215,97 @@ impl ApiClientApp {
     fn send_request(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.method_menu_open = false;
         self.request_context_menu = None;
-        self.send_active_request(cx);
+        self.method_menu_open = false;
+        self.request_context_menu = None;
+        if self.active_request().is_none() {
+            self.status_line = "Create a request before sending.".into();
+            cx.notify();
+            return;
+        }
+
+        let current_url = self.url_input.read(cx).value();
+        self.active_request_mut().unwrap().url = current_url.into();
+        self.sync_active_request_inputs(cx);
+        self.sync_environment_inputs(cx);
+        let request = self.active_request().unwrap().clone();
+        let request_id = request.id;
+        let request_name = request.name.clone();
+        let environment = &self.workspace.environments[self.workspace.active_environment];
+        let resolved = match request.to_resolved_domain(environment) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status_line = error.into();
+                cx.notify();
+                return;
+            }
+        };
+
+        if let Some(prior) = self.in_flight_requests.remove(&request_id) {
+            prior
+                .cancel
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel_for_task = cancel.clone();
+
+        self.status_line = format!("Sending {request_name}…").into();
+        cx.notify();
+
+        let task = cx.spawn(async move |this, cx| {
+            let cancel_check = cancel_for_task.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { domain::send_http_request(&resolved) })
+                .await;
+            if cancel_check.load(std::sync::atomic::Ordering::SeqCst) {
+                let _ = this.update(cx, |app, cx| {
+                    app.in_flight_requests.remove(&request_id);
+                    app.status_line = format!("Cancelled {request_name}.").into();
+                    cx.notify();
+                });
+                return;
+            }
+            let _ = this.update(cx, |app, cx| {
+                app.in_flight_requests.remove(&request_id);
+                match result {
+                    Ok(response) => {
+                        let response = ResponseRecord::from_domain(response);
+                        if let Some(active) = app.workspace.request_mut_by_id(request_id) {
+                            active.response = Some(response.clone());
+                            active.history.insert(0, response);
+                            let status = active.response.as_ref().unwrap().status;
+                            let status_text =
+                                active.response.as_ref().unwrap().status_text.clone();
+                            let history_len = active.history.len();
+                            app.status_line = format!(
+                                "Sent {request_name} and received {status} {status_text}; history now has {history_len} item(s)."
+                            )
+                            .into();
+                            app.persist_workspace();
+                        } else {
+                            app.status_line = format!(
+                                "Received response for {request_name} but the request was deleted."
+                            )
+                            .into();
+                        }
+                    }
+                    Err(error) => {
+                        app.status_line =
+                            format!("Request {request_name} failed: {error}").into();
+                    }
+                }
+                cx.notify();
+            });
+        });
+
+        self.in_flight_requests.insert(
+            request_id,
+            InFlightRequest {
+                cancel,
+                _task: task,
+            },
+        );
     }
 
     fn send_focused_request(
@@ -2446,6 +2536,39 @@ impl ApiClientApp {
             }
         }
         cx.notify();
+    }
+
+    fn cancel_request(
+        &mut self,
+        request_id: usize,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(prior) = self.in_flight_requests.remove(&request_id) {
+            prior
+                .cancel
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.status_line = "Cancelling request…".into();
+            cx.notify();
+        }
+    }
+
+    fn cancel_active_request(
+        &mut self,
+        event: &gpui::ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(id) = self.active_request_id {
+            self.cancel_request(id, event, window, cx);
+        }
+    }
+
+    fn is_active_request_in_flight(&self) -> bool {
+        self.active_request_id
+            .map(|id| self.in_flight_requests.contains_key(&id))
+            .unwrap_or(false)
     }
 
     fn add_param_row(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -4664,14 +4787,27 @@ impl ApiClientApp {
                     .gap(spacing.component_gap())
                     .child(self.render_method_select(&request, theme, typography, cx))
                     .child(self.render_url_input_field(theme, typography, window, cx))
-                    .child(Self::render_toolbar_button(
-                        "Send",
-                        true,
-                        ButtonStyle::Filled,
-                        theme,
-                        Self::send_request,
-                        cx,
-                    )),
+                    .child(if self.is_active_request_in_flight() {
+                        Self::render_toolbar_button(
+                            "Cancel",
+                            true,
+                            ButtonStyle::Tinted(ui::TintColor::Error),
+                            theme,
+                            Self::cancel_active_request,
+                            cx,
+                        )
+                        .into_any_element()
+                    } else {
+                        Self::render_toolbar_button(
+                            "Send",
+                            true,
+                            ButtonStyle::Filled,
+                            theme,
+                            Self::send_request,
+                            cx,
+                        )
+                        .into_any_element()
+                    }),
             )
             .child(
                 div()

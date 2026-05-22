@@ -1821,11 +1821,13 @@ impl ApiClientApp {
 
     fn persist_workspace(&mut self) {
         self.workspace.expanded_folders = self.expanded_folders.clone();
-        if let Err(error) =
-            domain::save_workspace(&self.workspace_path, &self.workspace.to_domain())
-        {
-            self.status_line = format!("Could not save workspace: {error}").into();
-        }
+        let workspace_path = self.workspace_path.clone();
+        let snapshot = self.workspace.to_domain();
+        std::thread::spawn(move || {
+            if let Err(error) = domain::save_workspace(&workspace_path, &snapshot) {
+                eprintln!("Could not save workspace: {error}");
+            }
+        });
     }
 
     fn request_index_by_id(&self, request_id: usize) -> Option<usize> {
@@ -4092,6 +4094,7 @@ impl ApiClientApp {
                     .border_0()
                     .border_b_1()
                     .border_color(theme.border_variant)
+                    .bg(theme.panel_background)
                     .p(spacing.base12())
                     .child(
                         ui::label(self.workspace.name.clone(), theme)
@@ -4866,7 +4869,7 @@ impl ApiClientApp {
                     .items_center()
                     .gap(spacing.cluster_gap())
                     .px(spacing.base12())
-                    .py(spacing.base08())
+                    .py(spacing.base04())
                     .border_b_1()
                     .border_color(theme.border_variant)
                     .bg(theme.toolbar_background)
@@ -5197,7 +5200,7 @@ impl ApiClientApp {
                     .justify_between()
                     .gap(spacing.component_gap())
                     .px(spacing.base12())
-                    .py(spacing.base08())
+                    .py(spacing.base04())
                     .border_b_1()
                     .border_color(theme.border_variant)
                     .bg(theme.toolbar_background)
@@ -5688,10 +5691,22 @@ impl ApiClientApp {
         let remove_id = format!("pair-remove:{key_prefix}");
         let toggle_hash = stable_key_hash(&toggle_id);
         let remove_hash = stable_key_hash(&remove_id);
-        let checkbox_color = if enabled { theme.accent } else { theme.border_variant };
-        let checkbox_bg = if enabled { theme.accent } else { theme.surface_background };
-        let checkbox_text = if enabled { theme.background } else { theme.text_muted };
-        let remove_color = if can_remove { theme.icon_muted } else { theme.icon_disabled };
+        let check_color = if enabled {
+            theme.icon
+        } else {
+            theme.icon_disabled
+        };
+        let checkbox_border = if enabled {
+            theme.border_variant
+        } else {
+            theme.border_variant
+        };
+        let remove_color = if can_remove {
+            theme.icon_muted
+        } else {
+            theme.icon_disabled
+        };
+        let input_height = ui::ButtonSize::Medium.height();
         div()
             .flex()
             .items_center()
@@ -5704,19 +5719,17 @@ impl ApiClientApp {
             .child(
                 div()
                     .id(("pair-toggle", toggle_hash))
-                    .w(px(16.0))
-                    .h(px(16.0))
+                    .w(input_height)
+                    .h(input_height)
                     .flex()
                     .items_center()
                     .justify_center()
                     .rounded_sm()
                     .border_1()
-                    .border_color(checkbox_color)
-                    .bg(checkbox_bg)
-                    .text_color(checkbox_text)
-                    .text_ui_xs(typography)
+                    .border_color(checkbox_border)
                     .cursor(CursorStyle::PointingHand)
-                    .child(if enabled { "x" } else { "" })
+                    .child(ui::icon(IconName::Check, ui::IconSize::Small, check_color))
+                    .when(!enabled, |this| this.opacity(0.35))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| match kind {
@@ -5727,29 +5740,36 @@ impl ApiClientApp {
             )
             .child(
                 div()
-                    .w(px(180.0))
-                    .child(Self::render_field_input_with_background(
-                        ("field-input", stable_key_hash(&name_key)),
-                        name_input,
-                        theme,
-                        theme.surface_background,
-                        typography,
-                        window,
-                        cx,
-                    )),
-            )
-            .child(
-                div()
+                    .flex()
                     .flex_1()
-                    .child(Self::render_field_input_with_background(
-                        ("field-input", stable_key_hash(&value_key)),
-                        value_input,
-                        theme,
-                        theme.surface_background,
-                        typography,
-                        window,
-                        cx,
-                    )),
+                    .min_w_0()
+                    .gap(spacing.component_gap())
+                    .child(
+                        div()
+                            .w(px(180.0))
+                            .child(Self::render_field_input_with_background(
+                                ("field-input", stable_key_hash(&name_key)),
+                                name_input,
+                                theme,
+                                theme.surface_background,
+                                typography,
+                                window,
+                                cx,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(Self::render_field_input_with_background(
+                                ("field-input", stable_key_hash(&value_key)),
+                                value_input,
+                                theme,
+                                theme.surface_background,
+                                typography,
+                                window,
+                                cx,
+                            )),
+                    ),
             )
             .child(
                 div()

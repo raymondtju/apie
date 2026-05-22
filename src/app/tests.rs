@@ -1,6 +1,6 @@
 use super::*;
 use crate::ui::{bind_code_input_keys, bind_text_input_keys};
-use gpui::{ClickEvent, Modifiers, TestAppContext};
+use gpui::{ClickEvent, Modifiers, ScrollWheelEvent, TestAppContext};
 use std::collections::HashSet;
 use std::io::{Read, Write};
 
@@ -30,6 +30,7 @@ fn resolves_environment_params_headers_auth_and_body_before_send() {
         body: "{\"token\":\"{{token}}\"}".into(),
         response: None,
         history: vec![],
+        response_pinned: false,
     };
 
     let resolved = request.to_resolved_domain(&environment).unwrap();
@@ -63,6 +64,7 @@ fn body_is_only_emitted_for_body_methods() {
         body: "{\"stale\":true}".into(),
         response: None,
         history: vec![],
+        response_pinned: false,
     };
 
     assert!(matches!(request.to_domain().body, domain::Body::Empty));
@@ -93,6 +95,7 @@ fn blank_editable_rows_are_not_sent() {
         body: "".into(),
         response: None,
         history: vec![],
+        response_pinned: false,
     };
 
     let domain_request = request.to_domain();
@@ -202,6 +205,7 @@ fn test_request(id: usize) -> Request {
         body: "".into(),
         response: None,
         history: vec![],
+        response_pinned: false,
     }
 }
 
@@ -1493,6 +1497,279 @@ fn response_pretty_and_raw_use_code_input(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn large_response_body_only_renders_visible_code_lines(cx: &mut TestAppContext) {
+    cx.update(bind_text_input_keys);
+    cx.update(bind_code_input_keys);
+    cx.update(bind_app_keys);
+    let temp_dir = tempfile::tempdir().unwrap();
+    let settings_path = temp_dir.path().join("settings.json");
+    let (app, cx) =
+        cx.add_window_view(|_, cx| ApiClientApp::new_with_settings_path(cx, settings_path));
+    let large_body = (0..5_000)
+        .map(|index| format!("{{\"index\":{index}}}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.add_request(&ClickEvent::default(), window, cx);
+            let request = app.active_request_mut().expect("request should exist");
+            request.response = Some(ResponseRecord {
+                status: 200,
+                status_text: "OK".into(),
+                duration_ms: 1,
+                size_bytes: large_body.len(),
+                headers: Vec::new(),
+                cookies: Vec::new(),
+                body: large_body.clone().into(),
+            });
+            app.active_response_panel = ResponsePanel::Body;
+            app.body_view_mode = BodyViewMode::Raw;
+        });
+    });
+
+    cx.debug_bounds("response-code-input")
+        .expect("large response should render with the code input");
+
+    app.read_with(cx, |app, cx| {
+        let request_id = app.active_request_id.expect("request should be selected");
+        let input = app
+            .response_body_inputs
+            .get(&(request_id, BodyViewMode::Raw))
+            .expect("raw response input should exist");
+        let input = input.read(cx);
+        assert_eq!(input.cached_total_line_count(), 5_000);
+        assert!(
+            input.rendered_line_count() < 200,
+            "large response should render only the viewport slice"
+        );
+    });
+}
+
+#[gpui::test]
+fn response_body_scrollbar_thumb_drags_scroll_position(cx: &mut TestAppContext) {
+    cx.update(bind_text_input_keys);
+    cx.update(bind_code_input_keys);
+    cx.update(bind_app_keys);
+    let temp_dir = tempfile::tempdir().unwrap();
+    let settings_path = temp_dir.path().join("settings.json");
+    let (app, cx) =
+        cx.add_window_view(|_, cx| ApiClientApp::new_with_settings_path(cx, settings_path));
+    let large_body = (0..5_000)
+        .map(|index| format!("{{\"index\":{index}}}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.add_request(&ClickEvent::default(), window, cx);
+            let request = app.active_request_mut().expect("request should exist");
+            request.response = Some(ResponseRecord {
+                status: 200,
+                status_text: "OK".into(),
+                duration_ms: 1,
+                size_bytes: large_body.len(),
+                headers: Vec::new(),
+                cookies: Vec::new(),
+                body: large_body.clone().into(),
+            });
+            app.active_response_panel = ResponsePanel::Body;
+            app.body_view_mode = BodyViewMode::Raw;
+        });
+    });
+    cx.update(|_, cx| app.update(cx, |_, cx| cx.notify()));
+
+    let thumb = cx
+        .debug_bounds("response-scrollbar-thumb")
+        .expect("response scrollbar thumb should render");
+    let start = thumb.center();
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    app.read_with(cx, |app, cx| {
+        assert!(app.response_scrollbar.read(cx).is_dragging());
+    });
+    cx.simulate_mouse_move(
+        point(start.x, start.y + px(8.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_move(
+        point(start.x, start.y + px(80.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.simulate_mouse_up(
+        point(start.x, start.y + px(80.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+
+    app.read_with(cx, |app, cx| {
+        assert!(app.response_scroll_handle.offset().y < px(0.0));
+        assert!(!app.response_scrollbar.read(cx).is_dragging());
+    });
+}
+
+#[gpui::test]
+fn response_body_scrollbar_track_click_scrolls_position(cx: &mut TestAppContext) {
+    cx.update(bind_text_input_keys);
+    cx.update(bind_code_input_keys);
+    cx.update(bind_app_keys);
+    let temp_dir = tempfile::tempdir().unwrap();
+    let settings_path = temp_dir.path().join("settings.json");
+    let (app, cx) =
+        cx.add_window_view(|_, cx| ApiClientApp::new_with_settings_path(cx, settings_path));
+    let large_body = (0..5_000)
+        .map(|index| format!("{{\"index\":{index}}}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.add_request(&ClickEvent::default(), window, cx);
+            let request = app.active_request_mut().expect("request should exist");
+            request.response = Some(ResponseRecord {
+                status: 200,
+                status_text: "OK".into(),
+                duration_ms: 1,
+                size_bytes: large_body.len(),
+                headers: Vec::new(),
+                cookies: Vec::new(),
+                body: large_body.clone().into(),
+            });
+            app.active_response_panel = ResponsePanel::Body;
+            app.body_view_mode = BodyViewMode::Raw;
+        });
+    });
+    cx.update(|_, cx| app.update(cx, |_, cx| cx.notify()));
+
+    let track = cx
+        .debug_bounds("response-scrollbar-track")
+        .expect("response scrollbar track should render");
+    cx.simulate_mouse_down(
+        point(track.center().x, track.bottom() - px(20.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+
+    app.read_with(cx, |app, _| {
+        assert!(app.response_scroll_handle.offset().y < px(0.0));
+    });
+}
+
+#[gpui::test]
+fn response_body_wheel_scroll_uses_native_scroll_handle(cx: &mut TestAppContext) {
+    cx.update(bind_text_input_keys);
+    cx.update(bind_code_input_keys);
+    cx.update(bind_app_keys);
+    let temp_dir = tempfile::tempdir().unwrap();
+    let settings_path = temp_dir.path().join("settings.json");
+    let (app, cx) =
+        cx.add_window_view(|_, cx| ApiClientApp::new_with_settings_path(cx, settings_path));
+    let large_body = (0..5_000)
+        .map(|index| format!("{{\"index\":{index}}}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.add_request(&ClickEvent::default(), window, cx);
+            let request = app.active_request_mut().expect("request should exist");
+            request.response = Some(ResponseRecord {
+                status: 200,
+                status_text: "OK".into(),
+                duration_ms: 1,
+                size_bytes: large_body.len(),
+                headers: Vec::new(),
+                cookies: Vec::new(),
+                body: large_body.clone().into(),
+            });
+            app.active_response_panel = ResponsePanel::Body;
+            app.body_view_mode = BodyViewMode::Raw;
+        });
+    });
+
+    let scroll_bounds = cx
+        .debug_bounds("response-body-code-scroll")
+        .expect("response body scroll area should render");
+    cx.simulate_event(ScrollWheelEvent {
+        position: scroll_bounds.center(),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-240.0))),
+        modifiers: Modifiers::default(),
+        touch_phase: gpui::TouchPhase::Moved,
+    });
+
+    app.read_with(cx, |app, cx| {
+        assert!(app.response_scroll_handle.offset().y < px(0.0));
+        assert!(!app.response_scrollbar.read(cx).is_dragging());
+    });
+}
+
+#[gpui::test]
+fn response_body_scroll_into_large_body_keeps_final_colored_cache(cx: &mut TestAppContext) {
+    cx.update(bind_text_input_keys);
+    cx.update(bind_code_input_keys);
+    cx.update(bind_app_keys);
+    let temp_dir = tempfile::tempdir().unwrap();
+    let settings_path = temp_dir.path().join("settings.json");
+    let (app, cx) =
+        cx.add_window_view(|_, cx| ApiClientApp::new_with_settings_path(cx, settings_path));
+    let large_body = (0..5_000)
+        .map(|index| format!("{{\"index\":{index},\"ok\":true}}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.add_request(&ClickEvent::default(), window, cx);
+            let request = app.active_request_mut().expect("request should exist");
+            request.response = Some(ResponseRecord {
+                status: 200,
+                status_text: "OK".into(),
+                duration_ms: 1,
+                size_bytes: large_body.len(),
+                headers: Vec::new(),
+                cookies: Vec::new(),
+                body: large_body.clone().into(),
+            });
+            app.active_response_panel = ResponsePanel::Body;
+            app.body_view_mode = BodyViewMode::Raw;
+        });
+    });
+
+    let scroll_bounds = cx
+        .debug_bounds("response-body-code-scroll")
+        .expect("response body scroll area should render");
+    cx.simulate_event(ScrollWheelEvent {
+        position: scroll_bounds.center(),
+        delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-18_000.0))),
+        modifiers: Modifiers::default(),
+        touch_phase: gpui::TouchPhase::Moved,
+    });
+    cx.refresh()
+        .expect("refresh should render scrolled response body");
+
+    app.read_with(cx, |app, cx| {
+        let request_id = app.active_request_id.expect("request should be selected");
+        let input = app
+            .response_body_inputs
+            .get(&(request_id, BodyViewMode::Raw))
+            .expect("raw response input should exist")
+            .read(cx);
+        assert!(
+            input.rendered_first_line_index() > 100,
+            "test should scroll well beyond initially rendered rows"
+        );
+        assert!(
+            input.rendered_line_count() < 200,
+            "large response should still render only the viewport slice"
+        );
+        assert!(
+            input.shape_cache_len() <= 1024,
+            "shape cache should remain bounded"
+        );
+        assert!(
+            input.rendered_rows_have_cached_shapes(),
+            "visible rows should be cached as final syntax-colored shapes"
+        );
+    });
+}
+
+#[gpui::test]
 fn response_toolbar_metadata_and_body_view_select_work(cx: &mut TestAppContext) {
     cx.update(bind_text_input_keys);
     cx.update(bind_code_input_keys);
@@ -1720,4 +1997,108 @@ fn body_editor_double_click_selects_word_not_all(cx: &mut TestAppContext) {
         let request = app.active_request().expect("request should exist");
         assert_eq!(request.body, "alpha beta X");
     });
+}
+
+#[gpui::test]
+fn oversize_response_body_renders_save_to_file_placeholder(cx: &mut TestAppContext) {
+    cx.update(bind_text_input_keys);
+    cx.update(bind_code_input_keys);
+    cx.update(bind_app_keys);
+    let temp_dir = tempfile::tempdir().unwrap();
+    let settings_path = temp_dir.path().join("settings.json");
+    let (app, cx) =
+        cx.add_window_view(|_, cx| ApiClientApp::new_with_settings_path(cx, settings_path));
+
+    // Build a body just over the 2 MB inline cap.
+    let body: String = std::iter::repeat('a').take(2 * 1024 * 1024 + 16).collect();
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.add_request(&ClickEvent::default(), window, cx);
+            let request = app.active_request_mut().expect("request should exist");
+            request.response = Some(ResponseRecord {
+                status: 200,
+                status_text: "OK".into(),
+                duration_ms: 1,
+                size_bytes: body.len(),
+                headers: vec![ResponseHeader {
+                    name: "content-type".into(),
+                    value: "application/json".into(),
+                }],
+                cookies: Vec::new(),
+                body: body.clone().into(),
+            });
+            app.active_response_panel = ResponsePanel::Body;
+            app.body_view_mode = BodyViewMode::Pretty;
+        });
+    });
+
+    cx.debug_bounds("response-body-oversize-placeholder")
+        .expect("oversize body should render the placeholder");
+    assert!(
+        cx.debug_bounds("response-code-input").is_none(),
+        "oversize body should bypass the code input"
+    );
+}
+
+#[gpui::test]
+fn very_large_response_body_cursor_movement_stays_responsive(cx: &mut TestAppContext) {
+    cx.update(bind_text_input_keys);
+    cx.update(bind_code_input_keys);
+    cx.update(bind_app_keys);
+    let temp_dir = tempfile::tempdir().unwrap();
+    let settings_path = temp_dir.path().join("settings.json");
+    let (app, cx) =
+        cx.add_window_view(|_, cx| ApiClientApp::new_with_settings_path(cx, settings_path));
+
+    // 100k lines, well below the 2 MB cap but well above the 5_000-line
+    // fold-detection threshold. Confirms that visible_line_count and
+    // home/end stay O(1) instead of walking every line.
+    let large_body = (0..100_000)
+        .map(|index| format!("{{\"index\":{index}}}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.add_request(&ClickEvent::default(), window, cx);
+            let request = app.active_request_mut().expect("request should exist");
+            request.response = Some(ResponseRecord {
+                status: 200,
+                status_text: "OK".into(),
+                duration_ms: 1,
+                size_bytes: large_body.len(),
+                headers: Vec::new(),
+                cookies: Vec::new(),
+                body: large_body.clone().into(),
+            });
+            app.active_response_panel = ResponsePanel::Body;
+            app.body_view_mode = BodyViewMode::Raw;
+        });
+    });
+
+    cx.debug_bounds("response-code-input")
+        .expect("100k-line response should still render the code input");
+
+    let started = std::time::Instant::now();
+    app.update(cx, |app, cx| {
+        let request_id = app.active_request_id.expect("request should be selected");
+        let input = app
+            .response_body_inputs
+            .get(&(request_id, BodyViewMode::Raw))
+            .cloned()
+            .expect("raw response input should exist");
+        input.update(cx, |input, _cx| {
+            // Compute visible line count and source line count many
+            // times. With the LineIndex-backed fast path these are O(1)
+            // / O(folds), so this loop should finish almost instantly.
+            for _ in 0..1_000 {
+                let _ = input.visible_line_count();
+                let _ = input.source_line_count();
+            }
+        });
+    });
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_millis(500),
+        "1k visible_line_count calls on a 100k-line body took {elapsed:?}"
+    );
 }

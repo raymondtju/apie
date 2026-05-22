@@ -68,15 +68,32 @@ pub fn button_like(
         .bg(background)
         .text_color(text)
         .hover(move |this| {
-            let hover_background = if selected {
-                theme.ghost_element_selected
-            } else {
-                match style {
-                    ButtonStyle::Transparent => theme.ghost_element_hover,
-                    _ => theme.element_hover,
+            if selected {
+                return this.bg(theme.ghost_element_selected).text_color(theme.text);
+            }
+            match style {
+                ButtonStyle::Filled => {
+                    let darker = Hsla {
+                        l: (theme.accent.l * 0.85).max(0.0),
+                        ..theme.accent
+                    };
+                    let white: Hsla = rgb(0xffffff).into();
+                    this.bg(darker).text_color(white)
                 }
-            };
-            this.bg(hover_background).text_color(theme.text)
+                ButtonStyle::Tinted(tint) => {
+                    let color = match tint {
+                        TintColor::Accent => theme.accent,
+                        TintColor::Success => theme.success,
+                        TintColor::Warning => theme.warning,
+                        TintColor::Error => theme.error,
+                    };
+                    this.bg(color.opacity(0.18)).text_color(color)
+                }
+                ButtonStyle::Transparent => {
+                    this.bg(theme.ghost_element_hover).text_color(theme.text)
+                }
+                _ => this.bg(theme.element_hover).text_color(theme.text),
+            }
         })
         .active(move |this| this.bg(theme.element_active))
 }

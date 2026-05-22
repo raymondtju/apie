@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, ops::Range, time::Duration};
+use std::{
+    collections::{BTreeSet, HashMap},
+    ops::Range,
+    time::Duration,
+};
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
@@ -7,7 +11,23 @@ use gpui::{
     Pixels, Point, ShapedLine, SharedString, Style, Task, TextRun, UTF16Selection, Window, actions,
     div, fill, point, prelude::*, px, relative, rgb, rgba, size,
 };
-use unicode_segmentation::UnicodeSegmentation;
+use unicode_segmentation::GraphemeCursor;
+
+/// Above this source-line count, fold detection is skipped entirely.
+/// Folds are a quality-of-life feature; rescanning a multi-megabyte body
+/// every edit is more expensive than the feature is worth.
+const FOLD_DETECTION_LINE_LIMIT: usize = 5_000;
+
+/// Maximum bytes of a single visible line that we feed to the OS text
+/// shaper. Anything beyond this is truncated visually with a marker; the
+/// underlying buffer keeps the full content so copy/paste/value() are
+/// unaffected.
+const SHAPE_LINE_BYTE_CAP: usize = 4_000;
+
+/// Shape and gutter cache capacity.  8192 entries covers a full 5000-line
+/// document with room to spare — no cache eviction during long drags
+/// through the whole body.  Memory cost at ~2 KB per shaped line ≈ 16 MB.
+const LINE_SHAPE_CACHE_LIMIT: usize = 8192;
 
 actions!(
     code_input,
@@ -47,6 +67,7 @@ pub(crate) struct CodeInput {
     selection_color: gpui::Hsla,
     syntax_colors: SyntaxColors,
     read_only: bool,
+    drag_in_progress: bool,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
@@ -58,6 +79,110 @@ pub(crate) struct CodeInput {
     cursor_blink_enabled: bool,
     cursor_blink_epoch: usize,
     cursor_blink_task: Option<Task<()>>,
+    line_index: LineIndex,
+    fold_cache: Option<FoldCache>,
+    /// Bumped on every content change. Used as the cache invalidation
+    /// key so shaped lines from the previous revision are dropped on
+    /// the next render.
+    content_revision: u64,
+    /// Identity of the syntax color set in use; bumped when colors
+    /// change to invalidate cached runs/shapes that depend on them.
+    syntax_revision: u64,
+    /// Cache of shaped content lines keyed by source row, display form,
+    /// and revision.
+    /// Bound at LINE_SHAPE_CACHE_LIMIT entries via deterministic LRU eviction.
+    shape_cache: HashMap<ShapeCacheKey, ShapedLineEntry>,
+    /// Monotonic counter used for deterministic least-recently-used
+    /// cache eviction.
+    shape_cache_clock: u64,
+    /// Cache of shaped gutter line numbers keyed by source row.
+    gutter_cache: HashMap<(usize, GutterMarker), ShapedLine>,
+}
+
+#[derive(Clone)]
+struct ShapedLineEntry {
+    revision: u64,
+    syntax_revision: u64,
+    shaped: ShapedLine,
+    last_used: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+struct ShapeCacheKey {
+    source_row: usize,
+    display: ShapeDisplay,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+enum ShapeDisplay {
+    Normal,
+    Plain,
+    Folded(char),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+enum GutterMarker {
+    None,
+    Expanded,
+    Collapsed,
+}
+
+/// Sum-tree-like line offset index. Stores the byte offset of each line
+/// start in the buffer. Line `i` spans `starts[i] .. starts[i+1]-1`
+/// (the trailing newline is excluded), or `starts[i] .. content.len()`
+/// for the final line. This is the lightweight stand-in for Zed's rope
+/// crate: O(1) line count, O(log n) row<->offset conversion.
+#[derive(Clone, Default)]
+struct LineIndex {
+    /// Byte offsets of each line's first character. `starts[0]` is always 0.
+    starts: Vec<usize>,
+    total_len: usize,
+}
+
+impl LineIndex {
+    fn build(text: &str) -> Self {
+        let mut starts = Vec::with_capacity(text.len() / 64 + 1);
+        starts.push(0);
+        for (idx, byte) in text.as_bytes().iter().enumerate() {
+            if *byte == b'\n' {
+                starts.push(idx + 1);
+            }
+        }
+        Self {
+            starts,
+            total_len: text.len(),
+        }
+    }
+
+    fn line_count(&self) -> usize {
+        self.starts.len()
+    }
+
+    /// Returns `(line_start, line_end)` byte offsets. `line_end` is the
+    /// position of the trailing newline (or content end for the last
+    /// line) and is exclusive of the newline byte.
+    fn line_range(&self, row: usize) -> (usize, usize) {
+        let start = self.starts[row];
+        let end = if row + 1 < self.starts.len() {
+            self.starts[row + 1].saturating_sub(1)
+        } else {
+            self.total_len
+        };
+        (start, end)
+    }
+
+    /// Returns the row containing byte offset `offset`.
+    fn row_for_offset(&self, offset: usize) -> usize {
+        match self.starts.binary_search(&offset) {
+            Ok(row) => row,
+            Err(row) => row.saturating_sub(1),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct FoldCache {
+    ranges: Vec<FoldRange>,
 }
 
 #[derive(Clone)]
@@ -67,10 +192,14 @@ struct CachedCodeLayout {
     line_starts: Vec<usize>,
     line_ends: Vec<usize>,
     fold_starts: Vec<Option<usize>>,
+    first_line_index: usize,
+    #[cfg(test)]
+    total_line_count: usize,
     line_height: Pixels,
     text_left: Pixels,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CodeLine {
     start: usize,
@@ -87,6 +216,18 @@ struct FoldRange {
     start_offset: usize,
     end_offset: usize,
     close_char: char,
+}
+
+/// Lightweight descriptor for one visible row inside the current
+/// viewport.  Contains only byte offsets and fold metadata — no owned
+/// text.  We allocate the actual display string only on a shape-cache
+/// miss.  This is the core of the "Zed-style" viewport-only shaping.
+#[derive(Clone, Copy)]
+struct VisibleRow {
+    source_row: usize,
+    byte_start: usize,
+    byte_end: usize,
+    fold: Option<FoldRange>,
 }
 
 #[derive(Clone, Copy)]
@@ -110,7 +251,23 @@ impl Default for SyntaxColors {
     }
 }
 
+impl SyntaxColors {
+    fn eq_to(&self, other: &SyntaxColors) -> bool {
+        self.property == other.property
+            && self.string == other.string
+            && self.number == other.number
+            && self.keyword == other.keyword
+            && self.punctuation == other.punctuation
+    }
+}
+
 fn fold_ranges_for_text(text: &str) -> Vec<FoldRange> {
+    if text.len() > 4 * 1024 * 1024 {
+        // Don't bother scanning multi-megabyte payloads; the line-count
+        // gate above already disables fold detection for tall buffers,
+        // but very wide single-line payloads also need a guard.
+        return Vec::new();
+    }
     let mut ranges = Vec::new();
     let mut stack: Vec<(char, usize, usize)> = Vec::new();
     let mut quote: Option<char> = None;
@@ -172,58 +329,46 @@ fn is_closing_pair_char(ch: char) -> bool {
     matches!(ch, '}' | ']' | '"' | '\'')
 }
 
-fn source_lines_for_text(text: &str) -> Vec<CodeLine> {
-    let mut lines = Vec::new();
-    let mut start = 0usize;
-    for (source_line, line) in text.split('\n').enumerate() {
-        let end = start + line.len();
-        lines.push(CodeLine {
-            start,
-            end,
-            text: line.to_string(),
-            source_line,
-            fold_start: None,
-        });
-        start = start.saturating_add(line.len()).saturating_add(1);
-    }
-    if lines.is_empty() {
-        lines.push(CodeLine {
-            start: 0,
-            end: 0,
-            text: String::new(),
-            source_line: 0,
-            fold_start: None,
-        });
-    }
-    lines
-}
-
+#[cfg(test)]
 fn visible_lines_for_text(text: &str, collapsed_folds: &BTreeSet<usize>) -> Vec<CodeLine> {
-    let source_lines = source_lines_for_text(text);
+    let index = LineIndex::build(text);
     let folds = fold_ranges_for_text(text);
     let mut visible = Vec::new();
-    let mut index = 0usize;
-    while index < source_lines.len() {
-        let line = source_lines[index].clone();
-        let fold = folds
-            .iter()
-            .find(|fold| fold.start_line == line.source_line);
+    let mut row = 0usize;
+    while row < index.line_count() {
+        let (start, end) = index.line_range(row);
+        let line_text = &text[start..end];
+        let fold = folds.iter().find(|fold| fold.start_line == row);
         if let Some(fold) = fold {
             if collapsed_folds.contains(&fold.start_line) {
-                let mut folded = line.clone();
-                folded.text = format!("{} ... {}", folded.text.trim_end(), fold.close_char);
-                folded.fold_start = Some(fold.start_line);
-                visible.push(folded);
-                index = fold.end_line.saturating_add(1);
+                let folded_text = format!("{} ... {}", line_text.trim_end(), fold.close_char);
+                visible.push(CodeLine {
+                    start,
+                    end,
+                    text: folded_text,
+                    source_line: row,
+                    fold_start: Some(fold.start_line),
+                });
+                row = fold.end_line.saturating_add(1);
                 continue;
             }
-            let mut expanded = line.clone();
-            expanded.fold_start = Some(fold.start_line);
-            visible.push(expanded);
+            visible.push(CodeLine {
+                start,
+                end,
+                text: line_text.to_string(),
+                source_line: row,
+                fold_start: Some(fold.start_line),
+            });
         } else {
-            visible.push(line);
+            visible.push(CodeLine {
+                start,
+                end,
+                text: line_text.to_string(),
+                source_line: row,
+                fold_start: None,
+            });
         }
-        index += 1;
+        row += 1;
     }
     visible
 }
@@ -236,6 +381,7 @@ impl CodeInput {
     ) -> Self {
         let content: SharedString = Self::sanitize_content(content.into().as_ref()).into();
         let end = content.len();
+        let line_index = LineIndex::build(content.as_ref());
         Self {
             focus_handle: cx.focus_handle(),
             debug_selector: "body-code-input",
@@ -246,6 +392,7 @@ impl CodeInput {
             selection_color: rgba(0x4f8cff30).into(),
             syntax_colors: SyntaxColors::default(),
             read_only: false,
+            drag_in_progress: false,
             selected_range: end..end,
             selection_reversed: false,
             marked_range: None,
@@ -257,6 +404,13 @@ impl CodeInput {
             cursor_blink_enabled: false,
             cursor_blink_epoch: 0,
             cursor_blink_task: None,
+            line_index,
+            fold_cache: None,
+            content_revision: 0,
+            syntax_revision: 0,
+            shape_cache: HashMap::new(),
+            shape_cache_clock: 0,
+            gutter_cache: HashMap::new(),
         }
     }
 
@@ -277,6 +431,8 @@ impl CodeInput {
         self.selected_range = end..end;
         self.selection_reversed = false;
         self.marked_range = None;
+        // Full clear — the entire content is replaced (e.g. switching requests).
+        self.rebuild_line_index(None);
         self.prune_collapsed_folds();
         self.reset_cursor_blink(cx);
     }
@@ -285,16 +441,43 @@ impl CodeInput {
         self.content.to_string()
     }
 
+    /// Cheap identity comparison against a `SharedString` without
+    /// cloning the underlying buffer. Same `Arc` storage hits the fast
+    /// path. Falls back to byte comparison when the storage differs.
+    pub(crate) fn content_eq(&self, other: &SharedString) -> bool {
+        if std::ptr::eq(self.content.as_ref().as_ptr(), other.as_ref().as_ptr())
+            && self.content.len() == other.len()
+        {
+            return true;
+        }
+        self.content.as_ref() == other.as_ref()
+    }
+
     pub(crate) fn set_placeholder(&mut self, placeholder: impl Into<SharedString>) {
         self.placeholder = placeholder.into();
     }
 
     pub(crate) fn set_placeholder_color(&mut self, color: gpui::Hsla) {
-        self.placeholder_color = color;
+        if self.placeholder_color != color {
+            self.placeholder_color = color;
+            self.gutter_cache.clear();
+        }
     }
 
     pub(crate) fn set_syntax_colors(&mut self, colors: SyntaxColors) {
-        self.syntax_colors = colors;
+        if !self.syntax_colors.eq_to(&colors) {
+            self.syntax_colors = colors;
+            self.syntax_revision = self.syntax_revision.wrapping_add(1);
+            self.shape_cache.clear();
+        }
+    }
+
+    pub(crate) fn set_drag_in_progress(&mut self, dragging: bool) {
+        self.drag_in_progress = dragging;
+    }
+
+    pub(crate) fn drag_in_progress(&self) -> bool {
+        self.drag_in_progress
     }
 
     pub(crate) fn is_focused(&self, window: &Window) -> bool {
@@ -307,6 +490,7 @@ impl CodeInput {
         }
         let range = self.clamp_range(self.selected_range.clone());
         self.collapsed_folds.clear();
+        let affected_row = self.line_index.row_for_offset(range.start);
         let (new_text, cursor_delta) = self.newline_text_for_range(&range);
         self.content =
             (self.content[0..range.start].to_owned() + &new_text + &self.content[range.end..])
@@ -315,23 +499,232 @@ impl CodeInput {
         self.selected_range = cursor..cursor;
         self.selection_reversed = false;
         self.marked_range = None;
-        self.prune_collapsed_folds();
+        self.rebuild_line_index(Some(affected_row));
         self.reset_cursor_blink(cx);
     }
 
-    fn source_lines(&self) -> Vec<CodeLine> {
-        source_lines_for_text(self.content.as_ref())
+    /// Rebuilds the line-offset index and selectively invalidates
+    /// shape/gutter caches.
+    ///
+    /// `invalidate_from` — if `Some(row)`, only cache entries whose
+    /// source row >= `row` are dropped (rows before the edit point have
+    /// unchanged content and keep their cached shapes).  Pass `None` to
+    /// clear everything (e.g. when the entire content is replaced).
+    ///
+    /// Fold detection is a full-document scan, so we only invalidate
+    /// the fold cache when the line count actually changes (newlines
+    /// inserted or removed).  Otherwise the cached fold ranges are
+    /// still accurate and we skip the O(n) re-scan during typing.
+    fn rebuild_line_index(&mut self, invalidate_from: Option<usize>) {
+        let old_line_count = self.line_index.line_count();
+        self.line_index = LineIndex::build(self.content.as_ref());
+
+        if old_line_count != self.line_index.line_count() {
+            // Line structure changed — fold ranges now point at wrong
+            // source rows.  Recompute lazily on next access.
+            self.fold_cache = None;
+        }
+        // Line count unchanged → fold ranges are still valid; keep cache.
+
+        if let Some(from_row) = invalidate_from {
+            self.shape_cache.retain(|key, _| key.source_row < from_row);
+            self.gutter_cache.retain(|&(row, _), _| row < from_row);
+        } else {
+            self.shape_cache.clear();
+            self.gutter_cache.clear();
+        }
+
+        self.content_revision = self.content_revision.wrapping_add(1);
     }
 
-    fn visible_lines(&self) -> Vec<CodeLine> {
-        visible_lines_for_text(self.content.as_ref(), &self.collapsed_folds)
+    fn folds(&mut self) -> &[FoldRange] {
+        if self.fold_cache.is_none() {
+            let ranges = if self.line_index.line_count() > FOLD_DETECTION_LINE_LIMIT {
+                Vec::new()
+            } else {
+                fold_ranges_for_text(self.content.as_ref())
+            };
+            self.fold_cache = Some(FoldCache { ranges });
+        }
+        &self.fold_cache.as_ref().unwrap().ranges
+    }
+
+    /// Returns the currently collapsed folds as a sorted list.
+    /// This is the small set we use for all visible-row <-> source-row
+    /// mapping.  Because the number of user-collapsed blocks is almost
+    /// always tiny, a linear Vec is perfectly fine (Zed uses sum trees
+    /// for the general case; we only need the active ones here).
+    fn active_collapsed(&mut self) -> Vec<FoldRange> {
+        if self.collapsed_folds.is_empty() {
+            return Vec::new();
+        }
+        // Avoid self-borrow conflict by materialising the folds first.
+        let all = self.folds().to_vec();
+        all.into_iter()
+            .filter(|f| self.collapsed_folds.contains(&f.start_line))
+            .collect()
+    }
+
+    /// Given a 0-based visible row index, return the corresponding
+    /// source row and, if this visible row is the header of a collapsed
+    /// fold, the FoldRange describing it.
+    ///
+    /// This replaces the old "walk the entire document from row 0 and
+    /// allocate strings for everything" approach.  We only pay O(#folds)
+    /// once per frame for the first visible row in the viewport, then
+    /// advance sequentially for the next ~50 rows.  This is the Zed
+    /// pattern (only materialize what you are about to draw).
+    fn source_row_for_visible_row(&mut self, target_vis: usize) -> (usize, Option<FoldRange>) {
+        let collapsed = self.active_collapsed();
+        let mut vis = 0usize;
+        let mut src = 0usize;
+        let total_src = self.line_index.line_count();
+        while src < total_src && vis <= target_vis {
+            if let Some(f) = collapsed.iter().find(|f| f.start_line == src).copied() {
+                if vis == target_vis {
+                    return (src, Some(f));
+                }
+                // The current visible row shows the folded header.
+                // Skip the entire folded region for subsequent rows.
+                src = f.end_line + 1;
+                vis += 1;
+                continue;
+            }
+            if vis == target_vis {
+                return (src, None);
+            }
+            src += 1;
+            vis += 1;
+        }
+        (src.min(total_src.saturating_sub(1)), None)
+    }
+
+    pub(crate) fn visible_line_count(&mut self) -> usize {
+        let source = self.line_index.line_count().max(1);
+        if self.collapsed_folds.is_empty() {
+            return source;
+        }
+        let mut hidden = 0usize;
+        let folds: Vec<FoldRange> = self.folds().to_vec();
+        for fold in folds {
+            if self.collapsed_folds.contains(&fold.start_line) {
+                hidden += fold.end_line.saturating_sub(fold.start_line);
+            }
+        }
+        source.saturating_sub(hidden).max(1)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rendered_line_count(&self) -> usize {
+        self.last_layout
+            .as_ref()
+            .map(|layout| layout.lines.len())
+            .unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cached_total_line_count(&self) -> usize {
+        self.last_layout
+            .as_ref()
+            .map(|layout| layout.total_line_count)
+            .unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rendered_first_line_index(&self) -> usize {
+        self.last_layout
+            .as_ref()
+            .map(|layout| layout.first_line_index)
+            .unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shape_cache_len(&self) -> usize {
+        self.shape_cache.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rendered_rows_have_cached_shapes(&self) -> bool {
+        let Some(layout) = self.last_layout.as_ref() else {
+            return false;
+        };
+        layout
+            .line_starts
+            .iter()
+            .zip(layout.fold_starts.iter())
+            .all(|(start, fold_start)| {
+                let source_row = self.line_index.row_for_offset(*start);
+                let display = if fold_start.is_some() {
+                    self.shape_cache
+                        .keys()
+                        .find(|key| key.source_row == source_row)
+                        .map(|key| key.display)
+                        .unwrap_or(ShapeDisplay::Normal)
+                } else {
+                    ShapeDisplay::Normal
+                };
+                self.shape_cache
+                    .get(&ShapeCacheKey {
+                        source_row,
+                        display,
+                    })
+                    .is_some_and(|entry| {
+                        entry.revision == self.content_revision
+                            && entry.syntax_revision == self.syntax_revision
+                    })
+            })
+    }
+
+    pub(crate) fn source_line_count(&self) -> usize {
+        self.line_index.line_count()
+    }
+
+    /// Returns the minimal information needed to render the visible rows
+    /// in `range`.  This is O(1) per returned row after we locate the
+    /// starting source row (O(#collapsed folds) for the jump).
+    fn visible_rows(&mut self, range: Range<usize>) -> Vec<VisibleRow> {
+        let total = self.visible_line_count();
+        if total == 0 || range.start >= total {
+            return Vec::new();
+        }
+        let end = range.end.min(total);
+        let start = range.start.min(end);
+
+        let mut rows = Vec::with_capacity(end - start);
+
+        let (mut source_row, mut fold) = self.source_row_for_visible_row(start);
+        let mut vis = start;
+
+        while vis < end {
+            let (bstart, bend) = self.line_index.line_range(source_row);
+            rows.push(VisibleRow {
+                source_row,
+                byte_start: bstart,
+                byte_end: bend,
+                fold,
+            });
+
+            vis += 1;
+            if let Some(f) = fold {
+                source_row = f.end_line + 1;
+                fold = None;
+            } else {
+                source_row += 1;
+            }
+
+            if fold.is_none() {
+                fold = self
+                    .active_collapsed()
+                    .into_iter()
+                    .find(|f| f.start_line == source_row);
+            }
+        }
+        rows
     }
 
     fn prune_collapsed_folds(&mut self) {
-        let valid_folds = fold_ranges_for_text(self.content.as_ref())
-            .into_iter()
-            .map(|fold| fold.start_line)
-            .collect::<BTreeSet<_>>();
+        let valid_folds: BTreeSet<usize> =
+            self.folds().iter().map(|fold| fold.start_line).collect();
         self.collapsed_folds
             .retain(|line| valid_folds.contains(line));
     }
@@ -495,26 +888,15 @@ impl CodeInput {
 
     fn home(&mut self, _: &CodeHome, _: &mut Window, cx: &mut Context<Self>) {
         let cursor = self.cursor_offset();
-        let line_start = self
-            .source_lines()
-            .into_iter()
-            .take_while(|line| line.start <= cursor)
-            .last()
-            .map(|line| line.start)
-            .unwrap_or(0);
+        let row = self.line_index.row_for_offset(cursor);
+        let (line_start, _) = self.line_index.line_range(row);
         self.move_to(line_start, cx);
     }
 
     fn end(&mut self, _: &CodeEnd, _: &mut Window, cx: &mut Context<Self>) {
         let cursor = self.cursor_offset();
-        let line_end = self
-            .source_lines()
-            .into_iter()
-            .find_map(|line| {
-                let end = line.start + line.text.len();
-                (cursor <= end).then_some(end)
-            })
-            .unwrap_or(self.content.len());
+        let row = self.line_index.row_for_offset(cursor);
+        let (_, line_end) = self.line_index.line_range(row);
         self.move_to(line_end, cx);
     }
 
@@ -595,39 +977,110 @@ impl CodeInput {
     }
 
     fn move_vertical(&mut self, direction: i32, select: bool, cx: &mut Context<Self>) {
-        let lines = self.visible_lines();
-        if lines.is_empty() {
+        // Build only the lines we actually need: current visible row
+        // plus the neighbour in the requested direction. This keeps
+        // arrow-key navigation O(folds) instead of O(document).
+        let total = self.visible_line_count();
+        if total == 0 {
             return;
         }
         let cursor = self.cursor_offset();
-        let current_index = lines
-            .iter()
-            .position(|line| cursor >= line.start && cursor <= line.end)
-            .or_else(|| {
-                lines
-                    .iter()
-                    .enumerate()
-                    .take_while(|(_, line)| line.start <= cursor)
-                    .last()
-                    .map(|(index, _)| index)
-            })
-            .unwrap_or(0);
-        let target_index = (current_index as i32 + direction)
-            .clamp(0, lines.len().saturating_sub(1) as i32) as usize;
-        if target_index == current_index {
+        let cursor_source_row = self.line_index.row_for_offset(cursor);
+        let folds: Vec<FoldRange> = self.folds().to_vec();
+        let collapsed: Vec<FoldRange> = folds
+            .into_iter()
+            .filter(|fold| self.collapsed_folds.contains(&fold.start_line))
+            .collect();
+
+        // Map source row to visible row (and find the visible row's
+        // source row, which may differ when the cursor is inside a
+        // collapsed range).
+        let mut visible_row_of_cursor = 0usize;
+        let mut current_visible_source = 0usize;
+        let mut source_row = 0usize;
+        let total_source = self.line_index.line_count();
+        let mut visible_row = 0usize;
+        while source_row < total_source {
+            let collapse = collapsed
+                .iter()
+                .find(|fold| fold.start_line == source_row)
+                .copied();
+            let span_end = collapse.map(|fold| fold.end_line).unwrap_or(source_row);
+            if cursor_source_row <= span_end && source_row <= cursor_source_row {
+                visible_row_of_cursor = visible_row;
+                current_visible_source = source_row;
+                break;
+            }
+            visible_row += 1;
+            source_row = if let Some(fold) = collapse {
+                fold.end_line.saturating_add(1)
+            } else {
+                source_row + 1
+            };
+        }
+
+        let target_visible_row = (visible_row_of_cursor as i32 + direction)
+            .clamp(0, total.saturating_sub(1) as i32) as usize;
+        if target_visible_row == visible_row_of_cursor {
             return;
         }
-        let current_line = &lines[current_index];
-        let target_line = &lines[target_index];
-        let column = cursor
-            .saturating_sub(current_line.start)
-            .min(current_line.text.len());
-        let target_index =
-            self.clamp_offset(target_line.start + column.min(target_line.text.len()));
+
+        // Walk to the target visible row in source-row space.
+        let (current_start, _) = self.line_index.line_range(current_visible_source);
+        let column = cursor.saturating_sub(current_start);
+
+        let mut walked_visible = visible_row_of_cursor;
+        let mut walked_source = current_visible_source;
+        while walked_visible != target_visible_row {
+            let collapse = collapsed
+                .iter()
+                .find(|fold| fold.start_line == walked_source)
+                .copied();
+            walked_source = if let Some(fold) = collapse {
+                fold.end_line.saturating_add(1)
+            } else {
+                walked_source + 1
+            };
+            if direction > 0 {
+                walked_visible += 1;
+            } else if walked_visible == 0 {
+                break;
+            }
+            if direction < 0 {
+                // Going backward: we walk forward to find the row at
+                // `target_visible_row`. This branch should not be hit;
+                // direction-aware traversal happens below.
+                break;
+            }
+        }
+
+        // Backward direction needs a forward walk from row 0 to the
+        // target visible row, which is still O(target_row + folds) and
+        // bounded by the viewport in practice.
+        if direction < 0 {
+            walked_visible = 0;
+            walked_source = 0;
+            while walked_visible < target_visible_row && walked_source < total_source {
+                let collapse = collapsed
+                    .iter()
+                    .find(|fold| fold.start_line == walked_source)
+                    .copied();
+                walked_visible += 1;
+                walked_source = if let Some(fold) = collapse {
+                    fold.end_line.saturating_add(1)
+                } else {
+                    walked_source + 1
+                };
+            }
+        }
+
+        let (target_start, target_end) = self.line_index.line_range(walked_source);
+        let target_offset = (target_start + column).min(target_end);
+        let target_offset = self.clamp_offset(target_offset);
         if select {
-            self.select_to(target_index, cx);
+            self.select_to(target_offset, cx);
         } else {
-            self.move_to(target_index, cx);
+            self.move_to(target_offset, cx);
         }
     }
 
@@ -650,7 +1103,7 @@ impl CodeInput {
             return false;
         }
         let mut line_index = None;
-        let mut line_origin_y = bounds.top();
+        let mut line_origin_y = bounds.top() + layout.line_height * layout.first_line_index as f32;
         for index in 0..layout.lines.len() {
             if position.y <= line_origin_y + layout.line_height {
                 line_index = Some(index);
@@ -667,6 +1120,7 @@ impl CodeInput {
         if !self.collapsed_folds.remove(&fold_start) {
             self.collapsed_folds.insert(fold_start);
         }
+        self.fold_cache = None;
         self.reset_cursor_blink(cx);
         true
     }
@@ -718,12 +1172,24 @@ impl CodeInput {
             return self.content.len();
         }
 
-        let mut line_origin_y = bounds.top();
+        let absolute_line_index = ((position.y - bounds.top()) / layout.line_height)
+            .floor()
+            .max(0.0) as usize;
+        let Some(relative_line_index) = absolute_line_index.checked_sub(layout.first_line_index)
+        else {
+            return first_offset_for_layout(layout).unwrap_or_else(|| self.content.len());
+        };
+        if relative_line_index >= layout.lines.len() {
+            return last_offset_for_layout(layout).unwrap_or_else(|| self.content.len());
+        }
+
+        let mut line_origin_y = bounds.top() + layout.line_height * absolute_line_index as f32;
         for ((line, line_start), line_end) in layout
             .lines
             .iter()
             .zip(layout.line_starts.iter().copied())
             .zip(layout.line_ends.iter().copied())
+            .skip(relative_line_index)
         {
             if position.y <= line_origin_y + layout.line_height {
                 return (line_start + line.closest_index_for_x(position.x - layout.text_left))
@@ -737,23 +1203,7 @@ impl CodeInput {
     fn position_for_index(&self, index: usize) -> Option<Point<Pixels>> {
         let bounds = self.last_bounds?;
         let layout = self.last_layout.as_ref()?;
-        let mut line_origin_y = bounds.top();
-        for ((line, line_start), line_end) in layout
-            .lines
-            .iter()
-            .zip(layout.line_starts.iter().copied())
-            .zip(layout.line_ends.iter().copied())
-        {
-            if index <= line_end {
-                let local_index = index.saturating_sub(line_start);
-                return Some(point(
-                    layout.text_left + line.x_for_index(local_index.min(line.len())),
-                    line_origin_y,
-                ));
-            }
-            line_origin_y += layout.line_height;
-        }
-        Some(point(bounds.left(), line_origin_y))
+        position_for_index_in_layout(index, bounds, layout)
     }
 
     fn selection_quads(
@@ -762,6 +1212,7 @@ impl CodeInput {
         lines: &[ShapedLine],
         line_starts: &[usize],
         line_ends: &[usize],
+        first_line_index: usize,
         line_height: Pixels,
         text_left: Pixels,
     ) -> Vec<PaintQuad> {
@@ -769,7 +1220,7 @@ impl CodeInput {
             return Vec::new();
         }
         let mut quads = Vec::new();
-        let mut line_origin_y = bounds.top();
+        let mut line_origin_y = bounds.top() + line_height * first_line_index as f32;
         for ((line, line_start), line_end) in lines
             .iter()
             .zip(line_starts.iter().copied())
@@ -876,6 +1327,8 @@ impl CodeInput {
         cx: &mut Context<Self>,
     ) {
         self.collapsed_folds.clear();
+        // Capture the affected source row BEFORE mutating content.
+        let affected_row = self.line_index.row_for_offset(range.start);
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -883,7 +1336,9 @@ impl CodeInput {
         self.selected_range = cursor..cursor;
         self.selection_reversed = false;
         self.marked_range.take();
-        self.prune_collapsed_folds();
+        self.rebuild_line_index(Some(affected_row));
+        // Fold detection is deferred to render; do not call
+        // prune_collapsed_folds here — it triggers a full-document scan.
         self.reset_cursor_blink(cx);
     }
 
@@ -903,18 +1358,23 @@ impl CodeInput {
     }
 
     fn previous_boundary(&self, offset: usize) -> usize {
-        self.content
-            .grapheme_indices(true)
-            .rev()
-            .find_map(|(idx, _)| (idx < offset).then_some(idx))
-            .unwrap_or(0)
+        let text = self.content.as_ref();
+        let offset = offset.min(text.len());
+        let mut cursor = GraphemeCursor::new(offset, text.len(), true);
+        match cursor.prev_boundary(text, 0) {
+            Ok(Some(prev)) => prev,
+            _ => 0,
+        }
     }
 
     fn next_boundary(&self, offset: usize) -> usize {
-        self.content
-            .grapheme_indices(true)
-            .find_map(|(idx, _)| (idx > offset).then_some(idx))
-            .unwrap_or(self.content.len())
+        let text = self.content.as_ref();
+        let offset = offset.min(text.len());
+        let mut cursor = GraphemeCursor::new(offset, text.len(), true);
+        match cursor.next_boundary(text, 0) {
+            Ok(Some(next)) => next,
+            _ => text.len(),
+        }
     }
 
     fn is_word_char(ch: char) -> bool {
@@ -1112,6 +1572,7 @@ impl EntityInputHandler for CodeInput {
         let range = self.clamp_range(range);
         let new_text = Self::sanitize_content(new_text);
         self.collapsed_folds.clear();
+        let affected_row = self.line_index.row_for_offset(range.start);
         self.content =
             (self.content[0..range.start].to_owned() + &new_text + &self.content[range.end..])
                 .into();
@@ -1122,7 +1583,7 @@ impl EntityInputHandler for CodeInput {
             .map(|range_utf16| self.range_from_utf16(range_utf16))
             .map(|new_range| new_range.start + range.start..new_range.end + range.end)
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
-        self.prune_collapsed_folds();
+        self.rebuild_line_index(Some(affected_row));
         self.reset_cursor_blink(cx);
     }
 
@@ -1163,6 +1624,77 @@ struct CodePrepaintState {
     selection: Vec<PaintQuad>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct VisibleLineRange {
+    start: usize,
+    end: usize,
+}
+
+fn visible_line_range(
+    bounds: Bounds<Pixels>,
+    visible_bounds: Bounds<Pixels>,
+    line_height: Pixels,
+    total_line_count: usize,
+) -> VisibleLineRange {
+    // Moderate overscan: pre-shapes a few rows above/below the viewport
+    // to absorb rapid wheel scrolling without cache misses on every
+    // frame.  5-line overscan adds ~10 shaped lines per frame (negligible
+    // cost) while preventing the stutter that 1-line overscan caused on
+    // fast scrolls.  The 1024-entry shape cache absorbs the overhead.
+    const OVERSCAN_LINES: usize = 5;
+
+    if total_line_count == 0 || line_height <= px(0.0) {
+        return VisibleLineRange { start: 0, end: 0 };
+    }
+
+    let clipped_top = (visible_bounds.top() - bounds.top()).max(px(0.0));
+    let clipped_bottom = (visible_bounds.bottom() - bounds.top()).max(px(0.0));
+    let first_visible = ((clipped_top / line_height).floor() as usize)
+        .saturating_sub(OVERSCAN_LINES)
+        .min(total_line_count);
+    let last_visible = ((clipped_bottom / line_height).ceil() as usize)
+        .saturating_add(OVERSCAN_LINES)
+        .min(total_line_count);
+    let end = last_visible.max(first_visible.saturating_add(1).min(total_line_count));
+
+    VisibleLineRange {
+        start: first_visible,
+        end,
+    }
+}
+
+fn position_for_index_in_layout(
+    index: usize,
+    bounds: Bounds<Pixels>,
+    layout: &CachedCodeLayout,
+) -> Option<Point<Pixels>> {
+    let mut line_origin_y = bounds.top() + layout.line_height * layout.first_line_index as f32;
+    for ((line, line_start), line_end) in layout
+        .lines
+        .iter()
+        .zip(layout.line_starts.iter().copied())
+        .zip(layout.line_ends.iter().copied())
+    {
+        if index >= line_start && index <= line_end {
+            let local_index = index.saturating_sub(line_start);
+            return Some(point(
+                layout.text_left + line.x_for_index(local_index.min(line.len())),
+                line_origin_y,
+            ));
+        }
+        line_origin_y += layout.line_height;
+    }
+    None
+}
+
+fn first_offset_for_layout(layout: &CachedCodeLayout) -> Option<usize> {
+    layout.line_starts.first().copied()
+}
+
+fn last_offset_for_layout(layout: &CachedCodeLayout) -> Option<usize> {
+    layout.line_ends.last().copied()
+}
+
 fn line_number_digits(max_line_number: usize) -> usize {
     max_line_number.max(1).to_string().len()
 }
@@ -1175,103 +1707,166 @@ fn fold_marker_width() -> Pixels {
     px(18.0)
 }
 
+fn display_for_row(row: VisibleRow, drag_in_progress: bool) -> ShapeDisplay {
+    row.fold
+        .map(|fold| ShapeDisplay::Folded(fold.close_char))
+        .unwrap_or(if drag_in_progress {
+            ShapeDisplay::Plain
+        } else {
+            ShapeDisplay::Normal
+        })
+}
+
+fn display_text_for_row(content: &str, row: VisibleRow) -> String {
+    let raw = &content[row.byte_start..row.byte_end];
+    if let Some(fold) = row.fold {
+        format!("{} ... {}", raw.trim_end(), fold.close_char)
+    } else {
+        raw.to_string()
+    }
+}
+
+fn truncate_shape_text(text: String) -> String {
+    if text.len() <= SHAPE_LINE_BYTE_CAP {
+        return text;
+    }
+
+    let mut cap = SHAPE_LINE_BYTE_CAP;
+    while cap > 0 && !text.is_char_boundary(cap) {
+        cap -= 1;
+    }
+    let total = text.len();
+    let mut truncated = text[..cap].to_string();
+    truncated.push_str(&format!(" ... [line truncated, {} chars total]", total));
+    truncated
+}
+
+fn prune_shape_cache(
+    cache: &mut HashMap<ShapeCacheKey, ShapedLineEntry>,
+    protected: &BTreeSet<ShapeCacheKey>,
+) {
+    if cache.len() <= LINE_SHAPE_CACHE_LIMIT {
+        return;
+    }
+
+    let mut candidates = cache
+        .iter()
+        .filter_map(|(key, entry)| (!protected.contains(key)).then_some((*key, entry.last_used)))
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|(key, last_used)| (*last_used, *key));
+
+    for (key, _) in candidates {
+        if cache.len() <= LINE_SHAPE_CACHE_LIMIT {
+            break;
+        }
+        cache.remove(&key);
+    }
+}
+
 fn syntax_runs_for_line(
     line: &str,
     base_run: &TextRun,
     base_color: gpui::Hsla,
     colors: SyntaxColors,
 ) -> Vec<TextRun> {
+    let bytes = line.as_bytes();
     let mut runs = Vec::new();
-    let mut index = 0usize;
+    let mut i = 0;
 
-    while index < line.len() {
-        let start = index;
-        let Some(ch) = line[index..].chars().next() else {
-            break;
-        };
+    while i < bytes.len() {
+        let start = i;
+        let b = bytes[i];
 
-        let (end, color) = if ch == '"' || ch == '\'' {
-            let quote = ch;
-            let mut escaped = false;
-            index += quote.len_utf8();
-            while index < line.len() {
-                let Some(next) = line[index..].chars().next() else {
-                    break;
-                };
-                index += next.len_utf8();
-                if escaped {
-                    escaped = false;
-                    continue;
-                }
-                if next == '\\' {
-                    escaped = true;
-                    continue;
-                }
-                if next == quote {
-                    break;
+        if b == b'"' || b == b'\'' {
+            let quote = b;
+            i += 1;
+            while i < bytes.len() && bytes[i] != quote {
+                if bytes[i] == b'\\' {
+                    i += 2;
+                } else {
+                    i += 1;
                 }
             }
-            let mut lookahead = index;
-            while lookahead < line.len() {
-                let Some(next) = line[lookahead..].chars().next() else {
-                    break;
-                };
-                if !next.is_whitespace() {
-                    break;
-                }
-                lookahead += next.len_utf8();
+            if i < bytes.len() {
+                i += 1;
             }
-            let is_property = line[lookahead..].starts_with(':');
-            (
-                index,
-                if is_property {
+            let end = i;
+            let is_property = {
+                let mut look = i;
+                while look < bytes.len() && matches!(bytes[look], b' ' | b'\t') {
+                    look += 1;
+                }
+                look < bytes.len() && bytes[look] == b':'
+            };
+            runs.push(TextRun {
+                len: end - start,
+                color: if is_property {
                     colors.property
                 } else {
                     colors.string
                 },
-            )
-        } else if ch.is_ascii_digit() || ch == '-' {
-            index += ch.len_utf8();
-            while index < line.len() {
-                let Some(next) = line[index..].chars().next() else {
-                    break;
-                };
-                if !(next.is_ascii_digit() || matches!(next, '.' | 'e' | 'E' | '+' | '-')) {
-                    break;
-                }
-                index += next.len_utf8();
+                ..base_run.clone()
+            });
+        } else if b.is_ascii_digit() || b == b'-' {
+            i += 1;
+            while i < bytes.len()
+                && (bytes[i].is_ascii_digit()
+                    || matches!(bytes[i], b'.' | b'e' | b'E' | b'+' | b'-'))
+            {
+                i += 1;
             }
-            (index, colors.number)
-        } else if ch.is_ascii_alphabetic() {
-            index += ch.len_utf8();
-            while index < line.len() {
-                let Some(next) = line[index..].chars().next() else {
-                    break;
-                };
-                if !next.is_ascii_alphabetic() {
-                    break;
-                }
-                index += next.len_utf8();
-            }
-            let token = &line[start..index];
-            let color = if matches!(token, "true" | "false" | "null") {
-                colors.keyword
-            } else {
-                base_color
-            };
-            (index, color)
-        } else if matches!(ch, '{' | '}' | '[' | ']' | ':' | ',') {
-            index += ch.len_utf8();
-            (index, colors.punctuation)
-        } else {
-            index += ch.len_utf8();
-            (index, base_color)
-        };
-
-        if end > start {
             runs.push(TextRun {
-                len: end - start,
+                len: i - start,
+                color: colors.number,
+                ..base_run.clone()
+            });
+        } else if b.is_ascii_alphabetic() {
+            i += 1;
+            while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            let color =
+                if &bytes[start..i] == b"true" || &bytes[start..i] == b"false" || &bytes[start..i] == b"null" {
+                    colors.keyword
+                } else {
+                    base_color
+                };
+            runs.push(TextRun {
+                len: i - start,
                 color,
+                ..base_run.clone()
+            });
+        } else if matches!(b, b'{' | b'}' | b'[' | b']' | b':' | b',') {
+            i += 1;
+            runs.push(TextRun {
+                len: 1,
+                color: colors.punctuation,
+                ..base_run.clone()
+            });
+        } else if b.is_ascii() {
+            // Batch consecutive plain-ASCII characters (whitespace, etc.)
+            // into a single run to avoid O(N) TextRun allocations.
+            i += 1;
+            while i < bytes.len() && bytes[i].is_ascii()
+                && !matches!(
+                    bytes[i],
+                    b'"' | b'\'' | b'{' | b'}' | b'[' | b']' | b':' | b','
+                ) && !bytes[i].is_ascii_alphanumeric()
+                && bytes[i] != b'-'
+            {
+                i += 1;
+            }
+            runs.push(TextRun {
+                len: i - start,
+                color: base_color,
+                ..base_run.clone()
+            });
+        } else {
+            let ch_len = line[start..].chars().next().map_or(1, |c| c.len_utf8());
+            i += ch_len;
+            runs.push(TextRun {
+                len: ch_len,
+                color: base_color,
                 ..base_run.clone()
             });
         }
@@ -1311,8 +1906,7 @@ impl Element for CodeElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let input = self.input.read(cx);
-        let line_count = input.visible_lines().len().max(1);
+        let line_count = self.input.update(cx, |input, _| input.visible_line_count());
         let mut style = Style::default();
         style.size.width = relative(1.).into();
         style.size.height = (window.line_height() * line_count as f32).into();
@@ -1328,88 +1922,283 @@ impl Element for CodeElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        let input = self.input.read(cx);
         let style = window.text_style();
         let font_size = style.font_size.to_pixels(window.rem_size());
         let line_height = window.line_height();
-        let max_line_number = input
-            .source_lines()
-            .last()
-            .map(|line| line.source_line + 1)
-            .unwrap_or(1);
+
+        let (use_placeholder, total_line_count, max_line_number, drag_in_progress) =
+            self.input.update(cx, |input, _| {
+                let use_placeholder = input.content.is_empty();
+                let visible = if use_placeholder {
+                    1
+                } else {
+                    input.visible_line_count()
+                };
+                (
+                    use_placeholder,
+                    visible,
+                    input.source_line_count().max(1),
+                    input.drag_in_progress(),
+                )
+            });
         let gutter_width = gutter_width(max_line_number);
         let text_left = bounds.left() + gutter_width;
-        let use_placeholder = input.content.is_empty();
-        let display_lines = if use_placeholder {
-            vec![CodeLine {
-                start: 0,
-                end: 0,
-                text: input.placeholder.to_string(),
-                source_line: 0,
-                fold_start: None,
+        let render_range = visible_line_range(
+            bounds,
+            window.content_mask().bounds,
+            line_height,
+            total_line_count,
+        );
+
+        // The best (Zed-recommended) path: obtain only the cheap per-row
+        // descriptors for the exact visible slice.  We never allocate the
+        // display text (or run the syntax highlighter) for rows that are
+        // already in the shape cache.  This is what lets 1000-line (and
+        // much larger) responses stay smooth.
+        let visible_rows: Vec<VisibleRow> = if use_placeholder {
+            // placeholder is a single synthetic row
+            vec![VisibleRow {
+                source_row: 0,
+                byte_start: 0,
+                byte_end: 0,
+                fold: None,
             }]
         } else {
-            input.visible_lines()
+            self.input.update(cx, |input, _| {
+                input.visible_rows(render_range.start..render_range.end)
+            })
         };
-        let text_color = if use_placeholder {
-            input.placeholder_color
-        } else {
-            style.color
+
+        let (text_color, syntax_colors, placeholder_color, content_revision, syntax_revision) = {
+            let input = self.input.read(cx);
+            (
+                if use_placeholder {
+                    input.placeholder_color
+                } else {
+                    style.color
+                },
+                input.syntax_colors,
+                input.placeholder_color,
+                input.content_revision,
+                input.syntax_revision,
+            )
         };
-        let mut lines = Vec::with_capacity(display_lines.len());
-        let mut gutter_lines = Vec::with_capacity(display_lines.len());
-        let mut line_starts = Vec::with_capacity(display_lines.len());
-        let mut line_ends = Vec::with_capacity(display_lines.len());
-        let mut fold_starts = Vec::with_capacity(display_lines.len());
+
+        // Read entity state once before the hot loop. SharedString::clone
+        // is arc-refcount; the shaped-line cache is probed per visible row
+        // so we do not clone the full cache on every scroll frame.
+        let (content_buf, placeholder_buf, collapsed_folds) = {
+            let input = self.input.read(cx);
+            (
+                if use_placeholder {
+                    SharedString::default()
+                } else {
+                    input.content.clone()
+                },
+                if use_placeholder {
+                    input.placeholder.clone()
+                } else {
+                    SharedString::default()
+                },
+                if use_placeholder {
+                    BTreeSet::new()
+                } else {
+                    input.collapsed_folds.clone()
+                },
+            )
+        };
+
+        let mut cache_clock = self.input.read(cx).shape_cache_clock;
+        // Pending cache inserts/touches are applied after the hot loop in
+        // one update call.
+        let mut pending_shape_inserts: Vec<(ShapeCacheKey, ShapedLineEntry)> = Vec::new();
+        let mut pending_shape_touches: Vec<(ShapeCacheKey, u64)> = Vec::new();
+        let mut pending_gutter_inserts: Vec<((usize, GutterMarker), ShapedLine)> = Vec::new();
+        let mut protected_shape_keys = BTreeSet::new();
+
+        let mut lines = Vec::with_capacity(visible_rows.len());
+        let mut gutter_lines = Vec::with_capacity(visible_rows.len());
+        let mut line_starts = Vec::with_capacity(visible_rows.len());
+        let mut line_ends = Vec::with_capacity(visible_rows.len());
+        let mut fold_starts = Vec::with_capacity(visible_rows.len());
         let gutter_digits = line_number_digits(max_line_number);
 
-        for line in display_lines {
-            line_starts.push(line.start);
-            line_ends.push(line.end);
-            fold_starts.push(line.fold_start);
-            let base_run = TextRun {
-                len: line.text.len(),
-                font: style.font(),
-                color: text_color,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
+        for vrow in visible_rows {
+            line_starts.push(vrow.byte_start);
+            line_ends.push(vrow.byte_end);
+            fold_starts.push(vrow.fold.map(|f| f.start_line));
+
+            let source_row = vrow.source_row;
+            let shape_key = ShapeCacheKey {
+                source_row,
+                display: display_for_row(vrow, drag_in_progress),
             };
-            let runs = if use_placeholder {
-                vec![base_run]
+            protected_shape_keys.insert(shape_key);
+            if drag_in_progress && shape_key.display != ShapeDisplay::Normal {
+                protected_shape_keys.insert(ShapeCacheKey {
+                    source_row,
+                    display: ShapeDisplay::Normal,
+                });
+            }
+            cache_clock = cache_clock.wrapping_add(1);
+            let collapsed_marker = if vrow.fold.is_some() {
+                if collapsed_folds.contains(&source_row) {
+                    GutterMarker::Collapsed
+                } else {
+                    GutterMarker::Expanded
+                }
             } else {
-                syntax_runs_for_line(&line.text, &base_run, text_color, input.syntax_colors)
+                GutterMarker::None
             };
-            lines.push(window.text_system().shape_line(
-                line.text.clone().into(),
-                font_size,
-                &runs,
-                None,
-            ));
-            let fold_marker = match line.fold_start {
-                Some(fold_start) if input.collapsed_folds.contains(&fold_start) => ">",
-                Some(_) => "v",
-                None => " ",
+            let gutter_key = (source_row, collapsed_marker);
+
+            // Single entity read for both caches: avoids a second
+            // GPUI entity borrow per iteration.
+            let (cached_shape, cached_gutter) = if !use_placeholder {
+                let input = self.input.read(cx);
+                let shape = input
+                    .shape_cache
+                    .get(&shape_key)
+                    .filter(|entry| {
+                        entry.revision == content_revision
+                            && entry.syntax_revision == syntax_revision
+                    })
+                    .map(|entry| entry.shaped.clone())
+                    .or_else(|| {
+                        // During drag, also check for Normal entries so
+                        // previously-shaped coloured lines stay cached.
+                        if drag_in_progress && shape_key.display != ShapeDisplay::Normal {
+                            input
+                                .shape_cache
+                                .get(&ShapeCacheKey {
+                                    source_row,
+                                    display: ShapeDisplay::Normal,
+                                })
+                                .filter(|entry| {
+                                    entry.revision == content_revision
+                                        && entry.syntax_revision == syntax_revision
+                                })
+                                .map(|entry| entry.shaped.clone())
+                        } else {
+                            None
+                        }
+                    });
+                let gutter = input.gutter_cache.get(&gutter_key).cloned();
+                (shape, gutter)
+            } else {
+                (None, None)
             };
-            let gutter_text = format!(
-                "{fold_marker} {:>width$}",
-                line.source_line + 1,
-                width = gutter_digits
-            );
-            let gutter_run = TextRun {
-                len: gutter_text.len(),
-                font: style.font(),
-                color: input.placeholder_color,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
+
+            let shaped_line = if let Some(shaped) = cached_shape {
+                pending_shape_touches.push((shape_key, cache_clock));
+                shaped
+            } else {
+                // Cache miss: shape the visible row with final syntax runs
+                // immediately. This avoids the uncoloured first frame that
+                // was visible when scrolling into uncached response lines.
+                let shape_text = if use_placeholder {
+                    placeholder_buf.to_string()
+                } else {
+                    display_text_for_row(content_buf.as_ref(), vrow)
+                };
+                let shape_text = truncate_shape_text(shape_text);
+                let base_run = TextRun {
+                    len: shape_text.len(),
+                    font: style.font(),
+                    color: text_color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let runs = if use_placeholder || drag_in_progress {
+                    vec![base_run]
+                } else {
+                    syntax_runs_for_line(&shape_text, &base_run, text_color, syntax_colors)
+                };
+                let shaped =
+                    window
+                        .text_system()
+                        .shape_line(shape_text.into(), font_size, &runs, None);
+
+                if !use_placeholder {
+                    pending_shape_inserts.push((
+                        shape_key,
+                        ShapedLineEntry {
+                            revision: content_revision,
+                            syntax_revision,
+                            shaped: shaped.clone(),
+                            last_used: cache_clock,
+                        },
+                    ));
+                }
+                shaped
             };
-            gutter_lines.push(window.text_system().shape_line(
-                gutter_text.into(),
-                font_size,
-                &[gutter_run],
-                None,
-            ));
+            lines.push(shaped_line);
+
+            let gutter_shape = if let Some(shaped) = cached_gutter {
+                shaped
+            } else {
+                let fold_marker = match collapsed_marker {
+                    GutterMarker::Collapsed => ">",
+                    GutterMarker::Expanded => "v",
+                    GutterMarker::None => " ",
+                };
+                let gutter_text = format!(
+                    "{fold_marker} {:>width$}",
+                    source_row + 1,
+                    width = gutter_digits
+                );
+                let gutter_run = TextRun {
+                    len: gutter_text.len(),
+                    font: style.font(),
+                    color: placeholder_color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let shaped = window.text_system().shape_line(
+                    gutter_text.into(),
+                    font_size,
+                    &[gutter_run],
+                    None,
+                );
+                pending_gutter_inserts.push((gutter_key, shaped.clone()));
+                shaped
+            };
+            gutter_lines.push(gutter_shape);
+        }
+
+        // --- Batch cache updates ---
+        // All shape/gutter misses and LRU touches were collected during
+        // the loop; apply them atomically now in a single entity update.
+        if !use_placeholder
+            && (!pending_shape_inserts.is_empty()
+                || !pending_shape_touches.is_empty()
+                || !pending_gutter_inserts.is_empty())
+        {
+            self.input.update(cx, |input, _| {
+                input.shape_cache_clock = cache_clock;
+                for (key, last_used) in pending_shape_touches.drain(..) {
+                    if let Some(entry) = input.shape_cache.get_mut(&key) {
+                        entry.last_used = last_used;
+                    }
+                }
+                for (key, entry) in pending_shape_inserts.drain(..) {
+                    input.shape_cache.insert(key, entry);
+                }
+                prune_shape_cache(&mut input.shape_cache, &protected_shape_keys);
+
+                for (key, shaped) in pending_gutter_inserts.drain(..) {
+                    input.gutter_cache.insert(key, shaped);
+                    if input.gutter_cache.len() > LINE_SHAPE_CACHE_LIMIT {
+                        let mut keys = input.gutter_cache.keys().copied().collect::<Vec<_>>();
+                        keys.sort_by_key(|(row, marker)| (*row, *marker));
+                        if let Some(k) = keys.into_iter().next() {
+                            input.gutter_cache.remove(&k);
+                        }
+                    }
+                }
+            });
         }
 
         let layout = CachedCodeLayout {
@@ -1418,9 +2207,13 @@ impl Element for CodeElement {
             line_starts,
             line_ends,
             fold_starts,
+            first_line_index: render_range.start,
+            #[cfg(test)]
+            total_line_count,
             line_height,
             text_left,
         };
+        let input = self.input.read(cx);
         let selection = if use_placeholder {
             Vec::new()
         } else {
@@ -1429,22 +2222,21 @@ impl Element for CodeElement {
                 &layout.lines,
                 &layout.line_starts,
                 &layout.line_ends,
+                layout.first_line_index,
                 layout.line_height,
                 layout.text_left,
             )
         };
-        let cursor = if !use_placeholder
-            && input.selected_range.is_empty()
-            && input.cursor_visible
+        let cursor = if !use_placeholder && input.selected_range.is_empty() && input.cursor_visible
         {
-            input
-                .position_for_index(input.cursor_offset())
-                .map(|cursor_position| {
+            position_for_index_in_layout(input.cursor_offset(), bounds, &layout).map(
+                |cursor_position| {
                     fill(
                         Bounds::new(cursor_position, size(px(2.0), line_height)),
                         input.cursor_color,
                     )
-                })
+                },
+            )
         } else if !input.read_only && use_placeholder && input.cursor_visible {
             Some(fill(
                 Bounds::new(point(text_left, bounds.top()), size(px(2.0), line_height)),
@@ -1453,6 +2245,13 @@ impl Element for CodeElement {
         } else {
             None
         };
+
+        // Store layout for position_for_index
+        let stored_layout = layout.clone();
+        self.input.update(cx, move |input, _cx| {
+            input.last_layout = Some(stored_layout);
+            input.last_bounds = Some(bounds);
+        });
 
         CodePrepaintState {
             layout,
@@ -1473,7 +2272,6 @@ impl Element for CodeElement {
     ) {
         let input = self.input.read(cx);
         let focus_handle = input.focus_handle.clone();
-        let debug_bounds = bounds;
         let _ = input;
         window.handle_input(
             &focus_handle,
@@ -1484,6 +2282,7 @@ impl Element for CodeElement {
             window.paint_quad(selection);
         }
         let mut line_origin = bounds.origin;
+        line_origin.y += prepaint.layout.line_height * prepaint.layout.first_line_index as f32;
         for (line, gutter_line) in prepaint
             .layout
             .lines
@@ -1511,11 +2310,7 @@ impl Element for CodeElement {
         {
             window.paint_quad(cursor);
         }
-        let layout = prepaint.layout.clone();
-        self.input.update(cx, move |input, _cx| {
-            input.last_layout = Some(layout);
-            input.last_bounds = Some(debug_bounds);
-        });
+        // last_layout is stored in prepaint — no need to clone again here.
     }
 }
 
@@ -1658,6 +2453,48 @@ mod tests {
     }
 
     #[test]
+    fn visible_line_range_clamps_to_viewport_with_overscan() {
+        let bounds = Bounds::new(point(px(0.0), px(-400.0)), size(px(500.0), px(2000.0)));
+        let visible_bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(500.0), px(240.0)));
+
+        let range = visible_line_range(bounds, visible_bounds, px(20.0), 200);
+
+        // With OVERSCAN_LINES=5: row 20 visible → 20-5=15 start, 32+5=37 end
+        assert_eq!(range.start, 15);
+        assert_eq!(range.end, 37);
+    }
+
+    #[test]
+    fn visible_line_range_clamps_at_document_edges() {
+        let line_height = px(20.0);
+        let visible_bounds = Bounds::new(point(px(0.0), px(0.0)), size(px(500.0), px(240.0)));
+
+        let top = visible_line_range(
+            Bounds::new(point(px(0.0), px(0.0)), size(px(500.0), px(2000.0))),
+            visible_bounds,
+            line_height,
+            100,
+        );
+        // With OVERSCAN_LINES=5: rows 0..12 visible → end = 12+5 = 17
+        assert_eq!(top, VisibleLineRange { start: 0, end: 17 });
+
+        let bottom = visible_line_range(
+            Bounds::new(point(px(0.0), px(-1880.0)), size(px(500.0), px(2000.0))),
+            visible_bounds,
+            line_height,
+            100,
+        );
+        // With OVERSCAN_LINES=5: row 94 is first → 94-5 = 89 start
+        assert_eq!(
+            bottom,
+            VisibleLineRange {
+                start: 89,
+                end: 100
+            }
+        );
+    }
+
+    #[test]
     fn syntax_runs_color_json_tokens() {
         let base = TextRun {
             len: 0,
@@ -1684,5 +2521,19 @@ mod tests {
             runs.iter().map(|run| run.len).sum::<usize>(),
             "  \"ok\": true, \"count\": 12".len()
         );
+    }
+
+    #[test]
+    fn shape_cache_key_distinguishes_folded_display_text() {
+        let normal = ShapeCacheKey {
+            source_row: 2,
+            display: ShapeDisplay::Normal,
+        };
+        let folded = ShapeCacheKey {
+            source_row: 2,
+            display: ShapeDisplay::Folded('}'),
+        };
+
+        assert_ne!(normal, folded);
     }
 }

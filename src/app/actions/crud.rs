@@ -678,6 +678,16 @@ impl ApiClientApp {
         cx.notify();
     }
 
+    pub(crate) fn dismiss_response_meta_popover(
+        &mut self,
+        _: &MouseDownEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.response_meta_popover = false;
+        cx.notify();
+    }
+
     pub(crate) fn copy_response_header_value(
         &mut self,
         value: SharedString,

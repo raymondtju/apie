@@ -246,6 +246,35 @@ impl CollectionItem {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ResponseTiming {
+    pub(crate) dns_lookup_ms: u64,
+    pub(crate) connect_ms: u64,
+    pub(crate) tls_handshake_ms: u64,
+    pub(crate) time_to_first_byte_ms: u64,
+    pub(crate) transfer_ms: u64,
+}
+
+impl ResponseTiming {
+    pub(crate) fn from_domain(timing: domain::ResponseTiming) -> Self {
+        Self {
+            dns_lookup_ms: timing.dns_lookup_ms,
+            connect_ms: timing.connect_ms,
+            tls_handshake_ms: timing.tls_handshake_ms,
+            time_to_first_byte_ms: timing.time_to_first_byte_ms,
+            transfer_ms: timing.transfer_ms,
+        }
+    }
+
+    pub(crate) fn total_ms(&self) -> u64 {
+        self.dns_lookup_ms
+            + self.connect_ms
+            + self.tls_handshake_ms
+            + self.time_to_first_byte_ms
+            + self.transfer_ms
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ResponseRecord {
     pub(crate) status: u16,
@@ -255,6 +284,7 @@ pub(crate) struct ResponseRecord {
     pub(crate) headers: Vec<ResponseHeader>,
     pub(crate) cookies: Vec<ResponseHeader>,
     pub(crate) body: SharedString,
+    pub(crate) timing: Option<ResponseTiming>,
 }
 
 #[derive(Clone)]
@@ -294,6 +324,7 @@ impl ResponseRecord {
                 .map(ResponseHeader::from_domain)
                 .collect(),
             body: response.body.into(),
+            timing: response.timing.map(ResponseTiming::from_domain),
         }
     }
 
@@ -306,6 +337,13 @@ impl ResponseRecord {
             headers: self.headers.iter().map(ResponseHeader::to_domain).collect(),
             cookies: self.cookies.iter().map(ResponseHeader::to_domain).collect(),
             body: self.body.to_string(),
+            timing: self.timing.map(|t| domain::ResponseTiming {
+                dns_lookup_ms: t.dns_lookup_ms,
+                connect_ms: t.connect_ms,
+                tls_handshake_ms: t.tls_handshake_ms,
+                time_to_first_byte_ms: t.time_to_first_byte_ms,
+                transfer_ms: t.transfer_ms,
+            }),
         }
     }
 }

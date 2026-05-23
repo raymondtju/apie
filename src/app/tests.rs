@@ -1379,6 +1379,7 @@ fn response_tabs_do_not_change_request_panel_and_can_switch_back(cx: &mut TestAp
                     name: "session".into(),
                     value: "abc".into(),
                 }],
+                timing: None,
                 body: "ok".into(),
             });
         });
@@ -1425,6 +1426,7 @@ fn response_headers_wrap_and_copy_values(cx: &mut TestAppContext) {
                     value: long_value.clone().into(),
                 }],
                 cookies: Vec::new(),
+                timing: None,
                 body: "ok".into(),
             });
             app.active_response_panel = ResponsePanel::Headers;
@@ -1461,6 +1463,7 @@ fn response_pretty_and_raw_use_code_input(cx: &mut TestAppContext) {
                 size_bytes: 11,
                 headers: Vec::new(),
                 cookies: Vec::new(),
+                timing: None,
                 body: "{\"ok\":true}".into(),
             });
             app.active_response_panel = ResponsePanel::Body;
@@ -1520,6 +1523,7 @@ fn large_response_body_only_renders_visible_code_lines(cx: &mut TestAppContext) 
                 size_bytes: large_body.len(),
                 headers: Vec::new(),
                 cookies: Vec::new(),
+                timing: None,
                 body: large_body.clone().into(),
             });
             app.active_response_panel = ResponsePanel::Body;
@@ -1569,6 +1573,7 @@ fn response_body_scrollbar_thumb_drags_scroll_position(cx: &mut TestAppContext) 
                 size_bytes: large_body.len(),
                 headers: Vec::new(),
                 cookies: Vec::new(),
+                timing: None,
                 body: large_body.clone().into(),
             });
             app.active_response_panel = ResponsePanel::Body;
@@ -1631,6 +1636,7 @@ fn response_body_scrollbar_track_click_scrolls_position(cx: &mut TestAppContext)
                 size_bytes: large_body.len(),
                 headers: Vec::new(),
                 cookies: Vec::new(),
+                timing: None,
                 body: large_body.clone().into(),
             });
             app.active_response_panel = ResponsePanel::Body;
@@ -1677,6 +1683,7 @@ fn response_body_wheel_scroll_uses_native_scroll_handle(cx: &mut TestAppContext)
                 size_bytes: large_body.len(),
                 headers: Vec::new(),
                 cookies: Vec::new(),
+                timing: None,
                 body: large_body.clone().into(),
             });
             app.active_response_panel = ResponsePanel::Body;
@@ -1724,6 +1731,7 @@ fn response_body_scroll_into_large_body_keeps_final_colored_cache(cx: &mut TestA
                 size_bytes: large_body.len(),
                 headers: Vec::new(),
                 cookies: Vec::new(),
+                timing: None,
                 body: large_body.clone().into(),
             });
             app.active_response_panel = ResponsePanel::Body;
@@ -1789,6 +1797,7 @@ fn response_toolbar_metadata_and_body_view_select_work(cx: &mut TestAppContext) 
                 size_bytes: 17,
                 headers: Vec::new(),
                 cookies: Vec::new(),
+                timing: None,
                 body: "{\"ok\":true}".into(),
             });
             app.body_view_mode = BodyViewMode::Pretty;
@@ -2025,6 +2034,7 @@ fn oversize_response_body_renders_save_to_file_placeholder(cx: &mut TestAppConte
                     value: "application/json".into(),
                 }],
                 cookies: Vec::new(),
+                timing: None,
                 body: body.clone().into(),
             });
             app.active_response_panel = ResponsePanel::Body;
@@ -2068,6 +2078,7 @@ fn very_large_response_body_cursor_movement_stays_responsive(cx: &mut TestAppCon
                 size_bytes: large_body.len(),
                 headers: Vec::new(),
                 cookies: Vec::new(),
+                timing: None,
                 body: large_body.clone().into(),
             });
             app.active_response_panel = ResponsePanel::Body;

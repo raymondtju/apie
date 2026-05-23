@@ -66,6 +66,26 @@ pub struct AppTheme {
 }
 
 impl AppTheme {
+    pub fn timing_phase_color(&self, index: usize) -> Hsla {
+        match index {
+            0 => rgb(0xeab308).into(), // DNS - yellow
+            1 => rgb(0xf97316).into(), // Connect - orange
+            2 => rgb(0xa855f7).into(), // TLS - purple
+            3 => rgb(0x3b82f6).into(), // TTFB - blue
+            _ => rgb(0x22c55e).into(), // Transfer - green
+        }
+    }
+
+    pub fn timing_phase_name(index: usize) -> &'static str {
+        match index {
+            0 => "DNS Lookup",
+            1 => "Connect",
+            2 => "TLS Handshake",
+            3 => "TTFB",
+            _ => "Transfer",
+        }
+    }
+
     pub fn for_mode(mode: ThemeMode) -> Self {
         match mode {
             ThemeMode::ZedDark => Self {

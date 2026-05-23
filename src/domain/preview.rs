@@ -32,5 +32,6 @@ pub(crate) fn run_preview(request: &Request, duration: Duration) -> ResponseReco
         headers: vec![Header::new("content-type", "application/json")],
         cookies: Vec::new(),
         body,
+        timing: None,
     }
 }

@@ -117,6 +117,25 @@ pub struct Request {
     pub history: Vec<ResponseRecord>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResponseTiming {
+    pub dns_lookup_ms: u64,
+    pub connect_ms: u64,
+    pub tls_handshake_ms: u64,
+    pub time_to_first_byte_ms: u64,
+    pub transfer_ms: u64,
+}
+
+impl ResponseTiming {
+    pub fn total_ms(&self) -> u64 {
+        self.dns_lookup_ms
+            + self.connect_ms
+            + self.tls_handshake_ms
+            + self.time_to_first_byte_ms
+            + self.transfer_ms
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResponseRecord {
     pub status: u16,
@@ -126,6 +145,8 @@ pub struct ResponseRecord {
     pub headers: Vec<Header>,
     pub cookies: Vec<Header>,
     pub body: String,
+    #[serde(default)]
+    pub timing: Option<ResponseTiming>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

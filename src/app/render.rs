@@ -1201,6 +1201,170 @@ impl ApiClientApp {
             .into_any_element()
     }
 
+    fn render_response_meta_popover(
+        &self,
+        theme: AppTheme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        if !self.response_meta_popover {
+            return div().into_any_element();
+        }
+        let Some(timing) = self
+            .active_request()
+            .and_then(|r| r.response.as_ref())
+            .and_then(|r| r.timing)
+        else {
+            return div().into_any_element();
+        };
+        let typography = self.typography();
+        let spacing = Spacing::app();
+
+        let mut phases = Vec::new();
+        if timing.dns_lookup_ms > 0 {
+            phases.push((0, timing.dns_lookup_ms, "DNS Lookup"));
+        }
+        if timing.connect_ms > 0 {
+            phases.push((1, timing.connect_ms, "Connect"));
+        }
+        if timing.tls_handshake_ms > 0 {
+            phases.push((2, timing.tls_handshake_ms, "TLS Handshake"));
+        }
+        if timing.time_to_first_byte_ms > 0 {
+            phases.push((3, timing.time_to_first_byte_ms, "TTFB"));
+        }
+        if timing.transfer_ms > 0 {
+            phases.push((4, timing.transfer_ms, "Transfer"));
+        }
+        if phases.is_empty() {
+            return div().into_any_element();
+        }
+        let max_val = phases
+            .iter()
+            .map(|(_, val, _)| *val)
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        let bar_width = px(80.0);
+
+        let rows = phases
+            .iter()
+            .map(|(index, val, name)| {
+                let label_width = px(90.0);
+                let pct = if *val > 0 {
+                    (*val as f32 / max_val as f32).min(1.0)
+                } else {
+                    0.0
+                };
+                let bar_color = theme.timing_phase_color(*index);
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(spacing.cluster_gap())
+                    .child(
+                        div()
+                            .w(label_width)
+                            .text_ui_sm(typography)
+                            .text_color(theme.text)
+                            .child(SharedString::from(*name)),
+                    )
+                    .child(
+                        div()
+                            .w(px(48.0))
+                            .flex()
+                            .justify_end()
+                            .text_ui_sm(typography)
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from(format!("{val} ms"))),
+                    )
+                    .child(
+                        div()
+                            .w(bar_width)
+                            .h(px(8.0))
+                            .rounded(px(3.0))
+                            .bg(theme.element_background)
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .h_full()
+                                    .w(bar_width * pct)
+                                    .rounded(px(3.0))
+                                    .bg(bar_color),
+                            ),
+                    )
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>();
+
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .bg(theme.ghost_element_background)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(Self::dismiss_response_meta_popover),
+                    ),
+            )
+            .child(
+                deferred(
+                    anchored()
+                        .anchor(Corner::TopRight)
+                        .position(point(px(-12.0), self.response_height - px(300.0)))
+                        .child(
+                            div()
+                                .id("timing-popover")
+                                .debug_selector(|| "timing-popover".into())
+                                .w(px(260.0))
+                                .p(spacing.base12())
+                                .rounded_sm()
+                                .border_1()
+                                .border_color(theme.panel_focused_border)
+                                .bg(theme.panel_overlay_background)
+                                .shadow_lg()
+                                .flex()
+                                .flex_col()
+                                .gap(spacing.base08())
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .child(
+                                            ui::label("Timing Breakdown", theme)
+                                                .font_weight(gpui::FontWeight::BOLD)
+                                                .text_ui_sm(typography),
+                                        )
+                                        .child(
+                                            ui::muted_label(
+                                                format!("{} ms total", timing.total_ms()),
+                                                theme,
+                                            )
+                                            .text_ui_xs(typography),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .h(px(1.0))
+                                        .w_full()
+                                        .bg(theme.border_variant),
+                                )
+                                .children(rows),
+                        ),
+                )
+                .with_priority(3),
+            )
+            .into_any_element()
+    }
+
     fn render_request_editor(
         &mut self,
         theme: AppTheme,
@@ -1711,25 +1875,43 @@ impl ApiClientApp {
                             .when_some(
                                 status_meta,
                                 |this, (status_color, status_text, duration, size)| {
+                                    let has_timing = response
+                                        .as_ref()
+                                        .and_then(|r| r.timing)
+                                        .is_some();
                                     this.child(
+                                        div()
+                                            .id("response-meta-click-target")
+                                            .debug_selector(|| "response-meta-group".into())
+                                            .flex()
+                                            .items_center()
+                                            .gap(spacing.cluster_gap())
+                                            .when(has_timing, |this| this.cursor(CursorStyle::PointingHand))
+                                            .when(has_timing, |this| {
+                                                this.on_click(cx.listener(|this, _event, _window, cx| {
+                                                    this.response_meta_popover = !this.response_meta_popover;
+                                                    cx.notify();
+                                                }))
+                                            })
+                                            .child(
                                         div()
                                             .debug_selector(|| "response-status-meta".into())
                                             .font_weight(gpui::FontWeight::BOLD)
                                             .text_color(status_color)
                                             .child(status_text),
-                                )
-                                .child(
-                                    div()
-                                        .debug_selector(|| "response-time-meta".into())
-                                        .text_color(theme.text_muted)
-                                        .child(duration),
-                                )
-                                .child(
-                                    div()
-                                        .debug_selector(|| "response-size-meta".into())
-                                        .text_color(theme.text_muted)
-                                        .child(size),
-                                )
+                                    )
+                                    .child(
+                                        div()
+                                            .debug_selector(|| "response-time-meta".into())
+                                            .text_color(theme.text_muted)
+                                            .child(duration),
+                                    )
+                                    .child(
+                                        div()
+                                            .debug_selector(|| "response-size-meta".into())
+                                            .text_color(theme.text_muted)
+                                            .child(size),
+                                    ))
                             }),
                     ),
             )
@@ -3145,6 +3327,7 @@ impl Render for ApiClientApp {
             .child(self.render_folder_context_menu(theme, cx))
             .child(self.render_method_menu_overlay(theme, typography, cx))
             .child(self.render_body_view_menu_overlay(theme, typography, cx))
+            .child(self.render_response_meta_popover(theme, cx))
             .when(!window.is_maximized() && !window.is_fullscreen(), |this| {
                 this.children(Self::render_resize_hitboxes())
             })

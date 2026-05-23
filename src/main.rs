@@ -39,6 +39,9 @@ impl AssetSource for AppAssets {
 }
 
 fn main() {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls CryptoProvider");
     Application::new()
         .with_assets(AppAssets {
             base: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"),

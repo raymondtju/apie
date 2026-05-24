@@ -2,39 +2,37 @@ mod app;
 mod settings;
 mod ui;
 
-use std::{borrow::Cow, fs, path::PathBuf};
+use std::borrow::Cow;
 
 use app::ApiClientApp;
 use gpui::{
     App, AppContext, Application, AssetSource, Bounds, Result, SharedString, TitlebarOptions,
     WindowBackgroundAppearance, WindowBounds, WindowDecorations, WindowOptions, px, size,
 };
-use ui::{bind_code_input_keys, bind_text_input_keys};
+use ui::{bind_code_input_keys, bind_text_input_keys, icon_bytes_for_path, ICON_FILENAMES};
 
-struct AppAssets {
-    base: PathBuf,
-}
+/// Embedded asset source. All UI icons are compiled into the binary via include_bytes!
+/// (see IconName::bytes and helpers in src/ui/icons.rs). This eliminates the previous
+/// fragility where a stale target/ binary baked an old CARGO_MANIFEST_DIR and caused
+/// silent icon load failures on `cargo run` after project moves or across machines.
+struct AppAssets;
 
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        fs::read(self.base.join(path))
-            .map(|data| Some(Cow::Owned(data)))
-            .map_err(Into::into)
+        if let Some(bytes) = icon_bytes_for_path(path) {
+            return Ok(Some(Cow::Borrowed(bytes)));
+        }
+        Ok(None)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        fs::read_dir(self.base.join(path))
-            .map(|entries| {
-                entries
-                    .filter_map(|entry| {
-                        entry
-                            .ok()
-                            .and_then(|entry| entry.file_name().into_string().ok())
-                            .map(SharedString::from)
-                    })
-                    .collect()
-            })
-            .map_err(Into::into)
+        if path == "icons" || path == "icons/" || path == "icons\\" {
+            return Ok(ICON_FILENAMES
+                .iter()
+                .map(|s| SharedString::from(*s))
+                .collect());
+        }
+        Ok(vec![])
     }
 }
 
@@ -43,9 +41,7 @@ fn main() {
         .install_default()
         .expect("Failed to install rustls CryptoProvider");
     Application::new()
-        .with_assets(AppAssets {
-            base: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"),
-        })
+        .with_assets(AppAssets)
         .run(|cx: &mut App| {
             bind_text_input_keys(cx);
             bind_code_input_keys(cx);

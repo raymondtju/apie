@@ -33,7 +33,72 @@ impl IconName {
             Self::Code => "icons/code.svg",
         }
     }
+
+    /// Returns the embedded SVG bytes for this icon (compile-time via include_bytes!).
+    /// This removes all runtime dependence on CARGO_MANIFEST_DIR / source tree location.
+    ///
+    /// When adding a new IconName variant:
+    ///   1. Add the matching arm here with the correct include_bytes! path.
+    ///   2. Add the leaf filename to ICON_FILENAMES in the helper below.
+    ///   3. (If the icon will be used) add a usage site via `icon(...)` or `icon_button_base(...)`.
+    pub(crate) fn bytes(self) -> &'static [u8] {
+        match self {
+            Self::Send => include_bytes!("../../assets/icons/send.svg"),
+            Self::Plus => include_bytes!("../../assets/icons/plus.svg"),
+            Self::Settings => include_bytes!("../../assets/icons/settings.svg"),
+            Self::Copy => include_bytes!("../../assets/icons/copy.svg"),
+            Self::Trash => include_bytes!("../../assets/icons/trash.svg"),
+            Self::Close => include_bytes!("../../assets/icons/close.svg"),
+            Self::Check => include_bytes!("../../assets/icons/check.svg"),
+            Self::ChevronDown => include_bytes!("../../assets/icons/chevron-down.svg"),
+            Self::PanelLeft => include_bytes!("../../assets/icons/panel-left.svg"),
+            Self::PanelRight => include_bytes!("../../assets/icons/panel-right.svg"),
+            Self::Search => include_bytes!("../../assets/icons/search.svg"),
+            Self::Code => include_bytes!("../../assets/icons/code.svg"),
+        }
+    }
 }
+
+/// Helper used by the AssetSource in main.rs to resolve "icons/xxx.svg" paths to bytes.
+/// Keeps all icon filename knowledge co-located with the enum.
+pub(crate) fn icon_bytes_for_path(path: &str) -> Option<&'static [u8]> {
+    // Support both forward and backslash forms (defensive)
+    let leaf = path
+        .strip_prefix("icons/")
+        .or_else(|| path.strip_prefix("icons\\"))?;
+    let name = match leaf {
+        "send.svg" => IconName::Send,
+        "plus.svg" => IconName::Plus,
+        "settings.svg" => IconName::Settings,
+        "copy.svg" => IconName::Copy,
+        "trash.svg" => IconName::Trash,
+        "close.svg" => IconName::Close,
+        "check.svg" => IconName::Check,
+        "chevron-down.svg" => IconName::ChevronDown,
+        "panel-left.svg" => IconName::PanelLeft,
+        "panel-right.svg" => IconName::PanelRight,
+        "search.svg" => IconName::Search,
+        "code.svg" => IconName::Code,
+        _ => return None,
+    };
+    Some(name.bytes())
+}
+
+/// Static list of icon filenames for AssetSource::list("icons") queries.
+pub(crate) const ICON_FILENAMES: &[&str] = &[
+    "send.svg",
+    "plus.svg",
+    "settings.svg",
+    "copy.svg",
+    "trash.svg",
+    "close.svg",
+    "check.svg",
+    "chevron-down.svg",
+    "panel-left.svg",
+    "panel-right.svg",
+    "search.svg",
+    "code.svg",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]

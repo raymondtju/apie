@@ -1055,6 +1055,7 @@ impl ApiClientApp {
                         .flex()
                         .flex_col()
                         .gap(spacing.base04())
+                        .on_mouse_move(|_, _, _| {})
                         .children(items),
                 )
                 .with_priority(3),
@@ -1085,6 +1086,7 @@ impl ApiClientApp {
                     .right_0()
                     .bottom_0()
                     .bg(theme.ghost_element_background)
+                    .on_mouse_move(|_, _, _| {})
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::dismiss_method_menu))
                     .on_mouse_down(MouseButton::Right, cx.listener(Self::dismiss_method_menu)),
             )
@@ -1159,6 +1161,7 @@ impl ApiClientApp {
                         .flex()
                         .flex_col()
                         .gap(spacing.base04())
+                        .on_mouse_move(|_, _, _| {})
                         .children(items),
                 )
                 .with_priority(3),
@@ -1189,6 +1192,7 @@ impl ApiClientApp {
                     .right_0()
                     .bottom_0()
                     .bg(theme.ghost_element_background)
+                    .on_mouse_move(|_, _, _| {})
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::dismiss_body_view_menu))
                     .on_mouse_down(
                         MouseButton::Right,
@@ -1220,6 +1224,7 @@ impl ApiClientApp {
                     .right_0()
                     .bottom_0()
                     .bg(theme.ghost_element_background)
+                    .on_mouse_move(|_, _, _| {})
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(Self::dismiss_response_meta_popover),
@@ -1864,6 +1869,7 @@ impl ApiClientApp {
                                                             .flex()
                                                             .flex_col()
                                                             .gap(spacing.base08())
+                                                            .on_mouse_move(|_, _, _| {})
                                                             .child(
                                                                 div()
                                                                     .flex()

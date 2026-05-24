@@ -1219,25 +1219,13 @@ impl ApiClientApp {
         let typography = self.typography();
         let spacing = Spacing::app();
 
-        let mut phases = Vec::new();
-        if timing.dns_lookup_ms > 0 {
-            phases.push((0, timing.dns_lookup_ms, "DNS Lookup"));
-        }
-        if timing.connect_ms > 0 {
-            phases.push((1, timing.connect_ms, "Connect"));
-        }
-        if timing.tls_handshake_ms > 0 {
-            phases.push((2, timing.tls_handshake_ms, "TLS Handshake"));
-        }
-        if timing.time_to_first_byte_ms > 0 {
-            phases.push((3, timing.time_to_first_byte_ms, "TTFB"));
-        }
-        if timing.transfer_ms > 0 {
-            phases.push((4, timing.transfer_ms, "Transfer"));
-        }
-        if phases.is_empty() {
-            return div().into_any_element();
-        }
+        let phases: [(usize, u64, &str); 5] = [
+            (0, timing.dns_lookup_ms, "DNS Lookup"),
+            (1, timing.connect_ms, "Connect"),
+            (2, timing.tls_handshake_ms, "TLS Handshake"),
+            (3, timing.time_to_first_byte_ms, "TTFB"),
+            (4, timing.transfer_ms, "Transfer"),
+        ];
         let max_val = phases
             .iter()
             .map(|(_, val, _)| *val)
@@ -1318,7 +1306,11 @@ impl ApiClientApp {
                 deferred(
                     anchored()
                         .anchor(Corner::TopRight)
-                        .position(point(px(-12.0), self.response_height - px(300.0)))
+                        .position(
+                            self.response_meta_popover_position
+                                .map(|pos| point(pos.x, pos.y + px(12.0)))
+                                .unwrap_or_else(|| point(px(0.0), px(0.0))),
+                        )
                         .child(
                             div()
                                 .id("timing-popover")
@@ -1888,8 +1880,9 @@ impl ApiClientApp {
                                             .gap(spacing.cluster_gap())
                                             .when(has_timing, |this| this.cursor(CursorStyle::PointingHand))
                                             .when(has_timing, |this| {
-                                                this.on_click(cx.listener(|this, _event, _window, cx| {
+                                                this.on_click(cx.listener(|this, event: &gpui::ClickEvent, _window, cx| {
                                                     this.response_meta_popover = !this.response_meta_popover;
+                                                    this.response_meta_popover_position = Some(event.position());
                                                     cx.notify();
                                                 }))
                                             })

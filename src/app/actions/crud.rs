@@ -685,6 +685,7 @@ impl ApiClientApp {
         cx: &mut Context<Self>,
     ) {
         self.response_meta_popover = false;
+        self.response_meta_popover_position = None;
         cx.notify();
     }
 

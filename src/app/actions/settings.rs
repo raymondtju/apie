@@ -104,21 +104,13 @@ impl ApiClientApp {
 
     pub(crate) fn toggle_method_menu(
         &mut self,
-        event: &gpui::ClickEvent,
+        _event: &gpui::ClickEvent,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.active_request().is_some() {
             self.request_context_menu = None;
             self.method_menu_open = !self.method_menu_open;
-            self.method_menu_position = if self.method_menu_open {
-                Some(point(
-                    event.position().x - px(42.0),
-                    event.position().y + px(16.0),
-                ))
-            } else {
-                None
-            };
             cx.notify();
         }
     }
@@ -139,7 +131,6 @@ impl ApiClientApp {
             self.persist_workspace();
         }
         self.method_menu_open = false;
-        self.method_menu_position = None;
         self.request_context_menu = None;
         cx.notify();
     }
@@ -160,14 +151,12 @@ impl ApiClientApp {
             self.persist_workspace();
         }
         self.method_menu_open = false;
-        self.method_menu_position = None;
         self.request_context_menu = None;
         cx.notify();
     }
 
     pub(crate) fn dismiss_method_menu(&mut self, _: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.method_menu_open = false;
-        self.method_menu_position = None;
         cx.notify();
     }
 }

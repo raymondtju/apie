@@ -184,6 +184,7 @@ pub fn select_trigger_with_size(
     let spacing = Spacing::app();
     button_like(id, open, ButtonStyle::Transparent, size, theme)
         .min_w(px(76.0))
+        .justify_between()
         .px(spacing.base08())
         .border_color(if open {
             color.opacity(0.45)

@@ -619,7 +619,6 @@ impl ApiClientApp {
     ) {
         self.active_response_panel = panel;
         self.body_view_menu_open = false;
-        self.body_view_menu_position = None;
         cx.notify();
     }
 
@@ -632,7 +631,6 @@ impl ApiClientApp {
     ) {
         self.body_view_mode = mode;
         self.body_view_menu_open = false;
-        self.body_view_menu_position = None;
         cx.notify();
     }
 
@@ -645,25 +643,16 @@ impl ApiClientApp {
     ) {
         self.body_view_mode = mode;
         self.body_view_menu_open = false;
-        self.body_view_menu_position = None;
         cx.notify();
     }
 
     pub(crate) fn toggle_body_view_menu(
         &mut self,
-        event: &gpui::ClickEvent,
+        _event: &gpui::ClickEvent,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.body_view_menu_open = !self.body_view_menu_open;
-        self.body_view_menu_position = if self.body_view_menu_open {
-            Some(point(
-                event.position().x - px(46.0),
-                event.position().y + px(16.0),
-            ))
-        } else {
-            None
-        };
         cx.notify();
     }
 
@@ -674,7 +663,6 @@ impl ApiClientApp {
         cx: &mut Context<Self>,
     ) {
         self.body_view_menu_open = false;
-        self.body_view_menu_position = None;
         cx.notify();
     }
 
@@ -685,7 +673,6 @@ impl ApiClientApp {
         cx: &mut Context<Self>,
     ) {
         self.response_meta_popover = false;
-        self.response_meta_popover_position = None;
         cx.notify();
     }
 

@@ -185,7 +185,7 @@ pub fn context_menu_item(
 pub fn tab_bar(theme: AppTheme) -> Stateful<Div> {
     h_flex()
         .id("tab-bar")
-        .h(px(28.0))
+        .h(px(24.0))
         .w_full()
         .flex_none()
         .overflow_x_scroll()

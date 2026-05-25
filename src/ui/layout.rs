@@ -131,7 +131,6 @@ pub fn input_field_shell_with_height(
         })
         .bg(theme.editor_background)
         .px(spacing.base08())
-        .py(spacing.base04())
         .text_color(theme.editor_text)
         .text_ui(typography)
         .hover(move |this| this.border_color(theme.border_focused))

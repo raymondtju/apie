@@ -29,7 +29,7 @@ impl Typography {
     }
 
     pub fn ui_xsmall(self) -> Rems {
-        rems_from_px((self.ui_font_size - 4.0).max(8.0))
+        rems_from_px((self.ui_font_size - 2.0).max(8.0))
     }
 
     pub fn buffer(self) -> Rems {

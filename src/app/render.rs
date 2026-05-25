@@ -156,11 +156,10 @@ impl ApiClientApp {
             id,
             false,
             ButtonStyle::Transparent,
-            ui::ButtonSize::Default,
+            ui::ButtonSize::Compact,
             theme,
         )
-        .w(ui::ButtonSize::Default.height())
-        .child(ui::icon(icon, ui::IconSize::Small, icon_color))
+        .child(ui::icon(icon, ui::IconSize::XSmall, icon_color))
         .debug_selector(move || id.into())
         .on_click(cx.listener(on_click))
     }
@@ -391,17 +390,18 @@ impl ApiClientApp {
                                     .gap(spacing.cluster_gap())
                                     .child(
                                         div()
-                                            .w(px(42.0))
-                                            .text_ui_xs(typography)
-                                            .text_color(request.method.color())
-                                            .child(request.method.as_str()),
-                                    )
-                                    .child(
-                                        div()
+                                            .flex_1()
+                                            .min_w_0()
                                             .font_weight(gpui::FontWeight::SEMIBOLD)
                                             .text_color(theme.text)
                                             .truncate()
                                             .child(request.name.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_ui_xs(typography)
+                                            .text_color(request.method.color())
+                                            .child(request.method.as_str()),
                                     ),
                             )
                             .into_any_element(),
@@ -1347,8 +1347,7 @@ impl ApiClientApp {
             .bg(theme.surface_background)
             .child(
                 ui::toolbar("request-editor-toolbar", theme)
-                    .h(px(40.0))
-                    .border_0()
+                    .h(px(36.0))
                     .bg(theme.surface_background)
                     .px(spacing.base12())
                     .gap(spacing.component_gap())
@@ -2500,8 +2499,6 @@ impl ApiClientApp {
             .flex()
             .items_center()
             .gap(spacing.component_gap())
-            .border_b_1()
-            .border_color(theme.border_variant)
             .bg(theme.surface_background)
             .px(spacing.base12())
             .py(spacing.base06())

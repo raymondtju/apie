@@ -8,8 +8,8 @@ use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
     Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, InteractiveElement,
     KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
-    Pixels, Point, ShapedLine, SharedString, Style, Task, TextRun, UTF16Selection,
-    Window, actions, div, fill, point, prelude::*, px, rgb, rgba, size,
+    Pixels, Point, ShapedLine, SharedString, Style, Task, TextRun, UTF16Selection, Window, actions,
+    div, fill, point, prelude::*, px, rgb, rgba, size,
 };
 use unicode_segmentation::GraphemeCursor;
 
@@ -1865,12 +1865,14 @@ fn syntax_runs_for_line(
             while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
                 i += 1;
             }
-            let color =
-                if &bytes[start..i] == b"true" || &bytes[start..i] == b"false" || &bytes[start..i] == b"null" {
-                    colors.keyword
-                } else {
-                    base_color
-                };
+            let color = if &bytes[start..i] == b"true"
+                || &bytes[start..i] == b"false"
+                || &bytes[start..i] == b"null"
+            {
+                colors.keyword
+            } else {
+                base_color
+            };
             runs.push(TextRun {
                 len: i - start,
                 color,
@@ -1887,11 +1889,13 @@ fn syntax_runs_for_line(
             // Batch consecutive plain-ASCII characters (whitespace, etc.)
             // into a single run to avoid O(N) TextRun allocations.
             i += 1;
-            while i < bytes.len() && bytes[i].is_ascii()
+            while i < bytes.len()
+                && bytes[i].is_ascii()
                 && !matches!(
                     bytes[i],
                     b'"' | b'\'' | b'{' | b'}' | b'[' | b']' | b':' | b','
-                ) && !bytes[i].is_ascii_alphanumeric()
+                )
+                && !bytes[i].is_ascii_alphanumeric()
                 && bytes[i] != b'-'
             {
                 i += 1;
@@ -2385,7 +2389,7 @@ impl Element for CodeElement {
                 input.gutter_border_color,
             )
         };
-        
+
         window.handle_input(
             &focus_handle,
             ElementInputHandler::new(bounds, self.input.clone()),
@@ -2394,7 +2398,7 @@ impl Element for CodeElement {
         for selection in prepaint.selection.drain(..) {
             window.paint_quad(selection);
         }
-        
+
         // 1. Paint text lines. The parent overflow_scroll container has
         // already translated our `bounds` by its scroll offset, so painting
         // at `text_left` directly draws in scroll-shifted window coords.
@@ -2425,7 +2429,10 @@ impl Element for CodeElement {
             // Paint subtle vertical border on the right of the gutter
             if let Some(border_color) = gutter_border_color {
                 let border_rect = Bounds::new(
-                    point(visible_bounds.left() + gutter_width_px - px(1.0), bounds.top()),
+                    point(
+                        visible_bounds.left() + gutter_width_px - px(1.0),
+                        bounds.top(),
+                    ),
                     size(px(1.0), bounds.size.height),
                 );
                 window.paint_quad(fill(border_rect, border_color));
@@ -2446,7 +2453,8 @@ impl Element for CodeElement {
             );
 
             // Only paint the gutter line number if it's within the viewport bounds
-            if gutter_origin.x >= visible_bounds.left() && gutter_origin.x < visible_bounds.right() {
+            if gutter_origin.x >= visible_bounds.left() && gutter_origin.x < visible_bounds.right()
+            {
                 gutter_line
                     .paint(gutter_origin, prepaint.layout.line_height, window, cx)
                     .unwrap();

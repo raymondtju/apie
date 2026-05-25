@@ -181,7 +181,13 @@ impl VerticalScrollbar {
         self.apply_drag(event.position, event.dragging(), window, cx);
     }
 
-    fn apply_drag(&mut self, position: Point<Pixels>, dragging: bool, _window: &mut Window, cx: &mut Context<Self>) {
+    fn apply_drag(
+        &mut self,
+        position: Point<Pixels>,
+        dragging: bool,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(drag) = self.active_drag else {
             return;
         };
@@ -466,7 +472,13 @@ impl HorizontalScrollbar {
         self.apply_drag(event.position, event.dragging(), window, cx);
     }
 
-    fn apply_drag(&mut self, position: Point<Pixels>, dragging: bool, _window: &mut Window, cx: &mut Context<Self>) {
+    fn apply_drag(
+        &mut self,
+        position: Point<Pixels>,
+        dragging: bool,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(drag) = self.active_drag else {
             return;
         };

@@ -16,7 +16,10 @@ pub(crate) fn resolve_headers(
         .collect()
 }
 
-pub(crate) fn resolve_auth(auth: &domain::Auth, environment: &Environment) -> Result<domain::Auth, String> {
+pub(crate) fn resolve_auth(
+    auth: &domain::Auth,
+    environment: &Environment,
+) -> Result<domain::Auth, String> {
     Ok(match auth {
         domain::Auth::None => domain::Auth::None,
         domain::Auth::Basic {
@@ -162,7 +165,10 @@ pub(crate) fn path_params_from_url(url: &str) -> Vec<Header> {
             let name = after_open[..end].trim();
             if !name.starts_with('{') && !name.is_empty() {
                 let owned_name: String = name.to_string();
-                if !params.iter().any(|p: &Header| p.name.as_ref() == owned_name) {
+                if !params
+                    .iter()
+                    .any(|p: &Header| p.name.as_ref() == owned_name)
+                {
                     params.push(Header::new(owned_name, ""));
                 }
             }
@@ -266,7 +272,6 @@ pub(crate) fn format_json_body(body: &str) -> Result<String, String> {
         .map_err(|error| error.to_string())
         .and_then(|value| serde_json::to_string_pretty(&value).map_err(|error| error.to_string()))
 }
-
 
 pub(crate) fn stable_key_hash(key: &str) -> usize {
     key.bytes().fold(0usize, |hash, byte| {

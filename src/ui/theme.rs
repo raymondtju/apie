@@ -76,8 +76,6 @@ impl AppTheme {
         }
     }
 
-
-
     pub fn for_mode(mode: ThemeMode) -> Self {
         match mode {
             ThemeMode::ZedDark => Self {

@@ -338,7 +338,7 @@ impl ApiClientApp {
                     let row_debug_selector = format!("collection-request-row-{request_id}");
                     let active = matches!(
                         selected_collection_item,
-                        Some(CollectionSelection::Request(id)) if id == request_id
+                        Some(CollectionSelection::Request { item_id, .. }) if item_id == request_id
                     );
                     let dragged_item = DraggedCollectionItem {
                         item_id: request_id,
@@ -413,7 +413,7 @@ impl ApiClientApp {
                     let expanded = self.expanded_folders.contains(id);
                     let selected = matches!(
                         selected_collection_item,
-                        Some(CollectionSelection::Folder(id)) if id == folder_id
+                        Some(CollectionSelection::Folder { item_id, .. }) if item_id == folder_id
                     );
                     let dragged_item = DraggedCollectionItem {
                         item_id: folder_id,
@@ -545,14 +545,134 @@ impl ApiClientApp {
                     this.drop_collection_at_root_end(dragged_item, window, cx)
                 },
             ))
+            .drag_over::<DraggedCollection>(move |target, _, _, _| {
+                target.bg(theme.element_selected).border_1()
+            })
+            .on_drop(
+                cx.listener(move |this, dragged_col: &DraggedCollection, window, cx| {
+                    this.drop_collection_at_end(dragged_col, window, cx)
+                }),
+            )
             .into_any_element()
     }
 
     fn render_sidebar(&self, theme: AppTheme, cx: &mut Context<Self>) -> impl IntoElement {
         let typography = self.typography();
         let spacing = Spacing::app();
-        let request_rows =
-            self.render_collection_items(&self.workspace.items, 0, theme, typography, cx);
+
+        let mut request_rows = Vec::new();
+        for collection in &self.workspace.collections {
+            let col_id = collection.id;
+            let expanded = self.expanded_collections.contains(&col_id);
+            let dragged_col = DraggedCollection {
+                collection_id: col_id,
+                label: collection.name.clone(),
+                theme,
+                typography,
+            };
+            request_rows.push(
+                ui::list_item(("collection-header", col_id), false, theme)
+                    .pr_0()
+                    .relative()
+                    .on_drag(dragged_col, |dragged_col, _, _, cx| {
+                        cx.new(|_| dragged_col.clone())
+                    })
+                    .drag_over::<DraggedCollection>(move |row, dragged, _, _| {
+                        if dragged.collection_id == col_id {
+                            row
+                        } else {
+                            row.bg(theme.element_selected)
+                                .border_color(theme.border_focused)
+                        }
+                    })
+                    .on_drop(
+                        cx.listener(move |this, dragged: &DraggedCollection, window, cx| {
+                            this.drop_collection_before_collection(col_id, dragged, window, cx)
+                        }),
+                    )
+                    .drag_over::<DraggedCollectionItem>(move |row, _, _, _| {
+                        row.bg(theme.element_selected)
+                            .border_color(theme.border_focused)
+                    })
+                    .on_drop(cx.listener(
+                        move |this, dragged: &DraggedCollectionItem, window, cx| {
+                            this.drop_item_into_collection(col_id, dragged, window, cx)
+                        },
+                    ))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_collection_expanded(col_id, cx);
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event, window, cx| {
+                            this.open_collection_context_menu(col_id, event, window, cx);
+                        }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(spacing.cluster_gap())
+                            .child(
+                                div()
+                                    .w(px(14.0))
+                                    .text_ui_xs(typography)
+                                    .text_color(theme.text_muted)
+                                    .child(if expanded { "v" } else { ">" }),
+                            )
+                            .child(
+                                div()
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .text_color(theme.text)
+                                    .truncate()
+                                    .child(collection.name.clone()),
+                            ),
+                    )
+                    .into_any_element(),
+            );
+
+            if expanded {
+                if collection.items.is_empty() {
+                    request_rows.push(
+                        div()
+                            .id(("collection-empty", collection.id))
+                            .pl(px(18.0))
+                            .py(spacing.base04())
+                            .text_ui_xs(typography)
+                            .text_color(theme.text_muted)
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(div().child("Empty collection"))
+                                    .child(
+                                        ui::icon_button_base(
+                                            ("add-req-to-empty-col", col_id),
+                                            IconName::Plus,
+                                            false,
+                                            theme,
+                                        )
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.add_request_to_collection(col_id, cx);
+                                            }),
+                                        ),
+                                    ),
+                            )
+                            .into_any_element(),
+                    );
+                } else {
+                    request_rows.extend(self.render_collection_items(
+                        &collection.items,
+                        1,
+                        theme,
+                        typography,
+                        cx,
+                    ));
+                }
+            }
+        }
 
         ui::dock_panel("collection-dock", theme)
             .w(self.collection_width)
@@ -564,11 +684,34 @@ impl ApiClientApp {
                     .border_b_1()
                     .border_color(theme.border_variant)
                     .bg(theme.panel_background)
-                    .p(spacing.base12())
+                    .p(spacing.base08())
                     .child(
-                        ui::label(self.workspace.name.clone(), theme)
-                            .text_ui_lg(typography)
-                            .font_weight(gpui::FontWeight::BOLD),
+                        div()
+                            .id("workspace-switcher-header")
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .w_full()
+                            .p(spacing.base04())
+                            .rounded_sm()
+                            .hover(|style| style.bg(theme.element_hover))
+                            .active(|style| style.bg(theme.element_selected))
+                            .on_click(cx.listener(Self::toggle_workspace_menu))
+                            .child(
+                                ui::label(self.workspace.name.clone(), theme)
+                                    .text_ui_lg(typography)
+                                    .font_weight(gpui::FontWeight::BOLD),
+                            )
+                            .child(
+                                div()
+                                    .text_ui_xs(typography)
+                                    .text_color(theme.text_muted)
+                                    .child(if self.workspace_menu_open {
+                                        "▾"
+                                    } else {
+                                        "▸"
+                                    }),
+                            ),
                     ),
             )
             .child(
@@ -576,7 +719,7 @@ impl ApiClientApp {
                     .h(px(34.0))
                     .p(spacing.base08())
                     .child(Self::render_button(
-                        "+ Request",
+                        "+ Req",
                         false,
                         ButtonStyle::Subtle,
                         theme,
@@ -589,6 +732,14 @@ impl ApiClientApp {
                         ButtonStyle::Subtle,
                         theme,
                         Self::add_root_folder,
+                        cx,
+                    ))
+                    .child(Self::render_button(
+                        "+ Col",
+                        false,
+                        ButtonStyle::Subtle,
+                        theme,
+                        Self::add_collection,
                         cx,
                     )),
             )
@@ -1603,9 +1754,9 @@ impl ApiClientApp {
                                             .text_color(theme.text_muted)
                                             .child("Auth Type"),
                                     )
-                                    .child(self.render_auth_select(
-                                        &request, theme, typography, cx,
-                                    )),
+                                    .child(
+                                        self.render_auth_select(&request, theme, typography, cx),
+                                    ),
                             )
                             .when(matches!(request.auth, Auth::ApiKey { .. }), |this| {
                                 this.child(
@@ -2020,11 +2171,7 @@ impl ApiClientApp {
             })
     }
 
-    fn render_response_loading(
-        &self,
-        theme: AppTheme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_response_loading(&self, theme: AppTheme, cx: &mut Context<Self>) -> AnyElement {
         let typography = self.typography();
         let spacing = Spacing::app();
         let elapsed = self
@@ -2310,11 +2457,7 @@ impl ApiClientApp {
                 ButtonStyle::Filled,
                 theme,
                 move |this, _event, _window, cx| {
-                    this.save_response_body_to_file(
-                        body.clone(),
-                        suggested_name.clone(),
-                        cx,
-                    );
+                    this.save_response_body_to_file(body.clone(), suggested_name.clone(), cx);
                 },
                 cx,
             ))
@@ -2779,10 +2922,12 @@ impl ApiClientApp {
                 .enumerate()
                 .map(|(index, mode)| {
                     let label = mode.label();
-                    let is_current = std::mem::discriminant(&request.auth)
-                        == std::mem::discriminant(&mode);
-                    let debug_selector =
-                        format!("auth-option-{}", label.to_ascii_lowercase().replace(' ', "-"));
+                    let is_current =
+                        std::mem::discriminant(&request.auth) == std::mem::discriminant(&mode);
+                    let debug_selector = format!(
+                        "auth-option-{}",
+                        label.to_ascii_lowercase().replace(' ', "-")
+                    );
                     let mode_slot = std::sync::Arc::new(mode);
                     ui::select_menu_item(
                         ("auth-option", index),
@@ -3196,6 +3341,396 @@ impl ApiClientApp {
                                 ButtonStyle::Tinted(ui::TintColor::Error),
                                 theme,
                                 Self::confirm_delete_request,
+                                cx,
+                            )),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_rename_collection_dialog(
+        &self,
+        theme: AppTheme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let Some(dialog) = self.rename_collection_dialog.as_ref() else {
+            return div().into_any_element();
+        };
+        let typography = self.typography();
+        let spacing = Spacing::app();
+        ui::modal_overlay(theme)
+            .child(Self::render_dialog_backdrop(cx))
+            .child(
+                div()
+                    .debug_selector(|| "rename-collection-dialog".into())
+                    .absolute()
+                    .top(px(110.0))
+                    .left(px(360.0))
+                    .right(px(360.0))
+                    .bg(theme.panel_overlay_background)
+                    .border_1()
+                    .border_color(theme.panel_focused_border)
+                    .rounded_sm()
+                    .shadow_lg()
+                    .occlude()
+                    .p(spacing.base12())
+                    .flex()
+                    .flex_col()
+                    .gap(spacing.component_gap())
+                    .child(ui::panel_header("Rename Collection", "", theme, typography))
+                    .child(Self::render_field_input(
+                        "rename-collection-input-shell",
+                        dialog.input.clone(),
+                        theme,
+                        typography,
+                        window,
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap(spacing.component_gap())
+                            .child(Self::render_button(
+                                "Cancel",
+                                false,
+                                ButtonStyle::Transparent,
+                                theme,
+                                Self::close_rename_collection_dialog,
+                                cx,
+                            ))
+                            .child(Self::render_button(
+                                "Rename",
+                                false,
+                                ButtonStyle::Filled,
+                                theme,
+                                Self::confirm_rename_collection,
+                                cx,
+                            )),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_delete_collection_dialog(
+        &self,
+        theme: AppTheme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let Some(dialog) = self.delete_collection_dialog.as_ref() else {
+            return div().into_any_element();
+        };
+        let typography = self.typography();
+        let spacing = Spacing::app();
+        ui::modal_overlay(theme)
+            .child(Self::render_dialog_backdrop(cx))
+            .child(
+                div()
+                    .debug_selector(|| "delete-collection-dialog".into())
+                    .absolute()
+                    .top(px(126.0))
+                    .left(px(360.0))
+                    .right(px(360.0))
+                    .bg(theme.panel_overlay_background)
+                    .border_1()
+                    .border_color(theme.panel_focused_border)
+                    .rounded_sm()
+                    .shadow_lg()
+                    .occlude()
+                    .p(spacing.base12())
+                    .flex()
+                    .flex_col()
+                    .gap(spacing.component_gap())
+                    .child(ui::panel_header("Delete Collection", "", theme, typography))
+                    .child(
+                        ui::muted_label(
+                            format!("Delete '{}' permanently? All nested requests and folders will be removed.", dialog.collection_name),
+                            theme,
+                        )
+                        .text_ui_sm(typography),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap(spacing.component_gap())
+                            .child(Self::render_button(
+                                "Cancel",
+                                false,
+                                ButtonStyle::Transparent,
+                                theme,
+                                Self::close_delete_collection_dialog,
+                                cx,
+                            ))
+                            .child(Self::render_button(
+                                "Delete",
+                                false,
+                                ButtonStyle::Tinted(ui::TintColor::Error),
+                                theme,
+                                Self::confirm_delete_collection,
+                                cx,
+                            )),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_collection_context_menu(
+        &self,
+        theme: AppTheme,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let Some(menu) = self.collection_context_menu else {
+            return div();
+        };
+        let typography = self.typography();
+
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .occlude()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(Self::dismiss_request_context_menu),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(Self::dismiss_request_context_menu),
+                    ),
+            )
+            .child(deferred(
+                anchored()
+                    .anchor(Corner::TopLeft)
+                    .position(menu.position)
+                    .child(
+                        ui::context_menu_panel("collection-context-menu", theme)
+                            .debug_selector(|| "collection-context-menu".into())
+                            .child(
+                                ui::context_menu_item(
+                                    "collection-context-new-request",
+                                    "New Request",
+                                    theme,
+                                    typography,
+                                )
+                                .debug_selector(|| "collection-context-new-request".into())
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(Self::add_request_to_context_collection_mouse_down),
+                                )
+                                .on_click(cx.listener(Self::add_request_to_context_collection)),
+                            )
+                            .child(
+                                ui::context_menu_item(
+                                    "collection-context-new-folder",
+                                    "New Folder",
+                                    theme,
+                                    typography,
+                                )
+                                .debug_selector(|| "collection-context-new-folder".into())
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(Self::add_folder_to_context_collection_mouse_down),
+                                )
+                                .on_click(cx.listener(Self::add_folder_to_context_collection)),
+                            )
+                            .child(
+                                ui::context_menu_item(
+                                    "collection-context-rename",
+                                    "Rename...",
+                                    theme,
+                                    typography,
+                                )
+                                .debug_selector(|| "collection-context-rename".into())
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(
+                                        Self::start_rename_collection_from_context_menu_mouse_down,
+                                    ),
+                                )
+                                .on_click(
+                                    cx.listener(Self::start_rename_collection_from_context_menu),
+                                ),
+                            )
+                            .child(
+                                ui::context_menu_item(
+                                    "collection-context-delete",
+                                    "Delete",
+                                    theme,
+                                    typography,
+                                )
+                                .debug_selector(|| "collection-context-delete".into())
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(
+                                        Self::start_delete_collection_from_context_menu_mouse_down,
+                                    ),
+                                )
+                                .on_click(
+                                    cx.listener(Self::start_delete_collection_from_context_menu),
+                                ),
+                            ),
+                    ),
+            ))
+    }
+
+    fn render_workspace_menu(&self, theme: AppTheme, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.workspace_menu_open {
+            return div().into_any_element();
+        }
+        let typography = self.typography();
+        let spacing = Spacing::app();
+
+        ui::modal_overlay(theme)
+            .child(
+                div()
+                    .id("workspace-menu-dismiss-overlay")
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.dismiss_workspace_menu(cx);
+                    })),
+            )
+            .child(
+                div()
+                    .id("workspace-switcher-menu")
+                    .absolute()
+                    .top(px(40.0))
+                    .left(px(8.0))
+                    .w(px(240.0))
+                    .bg(theme.panel_overlay_background)
+                    .border_1()
+                    .border_color(theme.panel_focused_border)
+                    .rounded_sm()
+                    .shadow_lg()
+                    .occlude()
+                    .p(spacing.base04())
+                    .flex()
+                    .flex_col()
+                    .gap(spacing.base04())
+                    .children(
+                        self.workspaces_list
+                            .iter()
+                            .enumerate()
+                            .map(|(idx, (name, path))| {
+                                let path_clone = path.clone();
+                                let active = path == &self.workspace_path;
+                                ui::list_item(("workspace-menu-item", idx), active, theme)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.switch_to_workspace(path_clone.clone(), cx);
+                                        this.workspace_menu_open = false;
+                                    }))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .w_full()
+                                            .child(
+                                                ui::label(name.clone(), theme)
+                                                    .text_ui_xs(typography),
+                                            )
+                                            .child(if active {
+                                                div()
+                                                    .text_ui_xs(typography)
+                                                    .text_color(theme.text)
+                                                    .child("✓")
+                                            } else {
+                                                div()
+                                            }),
+                                    )
+                            }),
+                    )
+                    .child(div().h_px().bg(theme.border_variant))
+                    .child(
+                        ui::list_item("workspace-menu-create-btn", false, theme)
+                            .on_click(cx.listener(Self::open_create_workspace_dialog))
+                            .child(
+                                ui::label("+ New Workspace", theme)
+                                    .text_ui_xs(typography)
+                                    .text_color(theme.text),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_create_workspace_dialog(
+        &self,
+        theme: AppTheme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let Some(dialog) = self.create_workspace_dialog.as_ref() else {
+            return div().into_any_element();
+        };
+        let typography = self.typography();
+        let spacing = Spacing::app();
+        ui::modal_overlay(theme)
+            .child(Self::render_dialog_backdrop(cx))
+            .child(
+                div()
+                    .debug_selector(|| "create-workspace-dialog".into())
+                    .absolute()
+                    .top(px(110.0))
+                    .left(px(360.0))
+                    .right(px(360.0))
+                    .bg(theme.panel_overlay_background)
+                    .border_1()
+                    .border_color(theme.panel_focused_border)
+                    .rounded_sm()
+                    .shadow_lg()
+                    .occlude()
+                    .p(spacing.base12())
+                    .flex()
+                    .flex_col()
+                    .gap(spacing.component_gap())
+                    .child(ui::panel_header(
+                        "Create New Workspace",
+                        "",
+                        theme,
+                        typography,
+                    ))
+                    .child(Self::render_field_input(
+                        "create-workspace-input-shell",
+                        dialog.input.clone(),
+                        theme,
+                        typography,
+                        window,
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap(spacing.component_gap())
+                            .child(Self::render_button(
+                                "Cancel",
+                                false,
+                                ButtonStyle::Transparent,
+                                theme,
+                                Self::close_create_workspace_dialog,
+                                cx,
+                            ))
+                            .child(Self::render_button(
+                                "Create",
+                                false,
+                                ButtonStyle::Filled,
+                                theme,
+                                Self::confirm_create_workspace,
                                 cx,
                             )),
                     ),
@@ -3706,12 +4241,17 @@ impl Render for ApiClientApp {
                     ),
             )
             .child(self.render_settings_dialog(theme, cx))
+            .child(self.render_workspace_menu(theme, cx))
+            .child(self.render_create_workspace_dialog(theme, window, cx))
             .child(self.render_rename_request_dialog(theme, window, cx))
             .child(self.render_delete_request_dialog(theme, cx))
             .child(self.render_rename_folder_dialog(theme, window, cx))
             .child(self.render_delete_folder_dialog(theme, cx))
+            .child(self.render_rename_collection_dialog(theme, window, cx))
+            .child(self.render_delete_collection_dialog(theme, cx))
             .child(self.render_request_context_menu(theme, cx))
             .child(self.render_folder_context_menu(theme, cx))
+            .child(self.render_collection_context_menu(theme, cx))
             .child(self.render_method_menu_overlay(theme, typography, cx))
             .child(self.render_body_view_menu_overlay(theme, typography, cx))
             .child(self.render_response_meta_popover(theme, cx))

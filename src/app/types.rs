@@ -93,6 +93,16 @@ pub(crate) enum Auth {
 }
 
 impl Auth {
+    pub(crate) fn label(&self) -> &'static str {
+        match self {
+            Self::None => "No Auth",
+            Self::Basic { .. } => "Basic Auth",
+            Self::Bearer { .. } => "Bearer Token",
+            Self::ApiKey { .. } => "API Key",
+        }
+    }
+
+    #[allow(dead_code)]
     pub(crate) fn summary(&self) -> SharedString {
         match self {
             Self::None => "No auth".into(),
@@ -147,6 +157,12 @@ pub(crate) enum AuthLocation {
 }
 
 impl AuthLocation {
+    const ALL: [Self; 3] = [Self::Header, Self::Query, Self::Cookie];
+
+    pub(crate) fn all() -> &'static [Self] {
+        &Self::ALL
+    }
+
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Header => "header",
@@ -155,6 +171,7 @@ impl AuthLocation {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn next(self) -> Self {
         match self {
             Self::Header => Self::Query,

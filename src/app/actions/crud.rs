@@ -509,43 +509,95 @@ impl ApiClientApp {
         }
     }
 
-    pub(crate) fn cycle_auth(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(request) = self.active_request_mut() {
-            request.auth = match &request.auth {
-                Auth::None => Auth::Bearer {
-                    label: "token".into(),
-                    secret_ref: "{{token}}".into(),
-                },
-                Auth::Bearer { .. } => Auth::Basic {
-                    username: "user".into(),
-                    password: "{{password}}".into(),
-                },
-                Auth::Basic { .. } => Auth::ApiKey {
-                    name: "x-api-key".into(),
-                    secret_ref: "{{token}}".into(),
-                    location: AuthLocation::Header,
-                },
-                Auth::ApiKey { .. } => Auth::None,
-            };
-            self.status_line = "Changed request auth mode.".into();
-            self.persist_workspace();
-        }
-        cx.notify();
-    }
-
-    pub(crate) fn cycle_api_key_location(
+    pub(crate) fn toggle_auth_menu(
         &mut self,
         _: &gpui::ClickEvent,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.active_request().is_some() {
+            self.auth_location_menu_open = false;
+            self.auth_menu_open = !self.auth_menu_open;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn set_auth_mode(
+        &mut self,
+        mode: Auth,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(request) = self.active_request_mut() {
+            request.auth = mode;
+            self.status_line = "Changed request auth mode.".into();
+            self.persist_workspace();
+        }
+        self.auth_menu_open = false;
+        cx.notify();
+    }
+
+    pub(crate) fn set_auth_mode_from_mouse_down(
+        &mut self,
+        mode: Auth,
+        _: &gpui::MouseDownEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(request) = self.active_request_mut() {
+            request.auth = mode;
+            self.status_line = "Changed request auth mode.".into();
+            self.persist_workspace();
+        }
+        self.auth_menu_open = false;
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_auth_location_menu(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.auth_menu_open = false;
+        self.auth_location_menu_open = !self.auth_location_menu_open;
+        cx.notify();
+    }
+
+    pub(crate) fn set_api_key_location(
+        &mut self,
+        location: AuthLocation,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(request) = self.active_request_mut()
-            && let Auth::ApiKey { location, .. } = &mut request.auth
+            && let Auth::ApiKey { location: loc, .. } = &mut request.auth
         {
-            *location = location.next();
+            *loc = location;
             self.status_line = format!("API key will be sent in {}.", location.label()).into();
             self.persist_workspace();
         }
+        self.auth_location_menu_open = false;
+        cx.notify();
+    }
+
+    pub(crate) fn set_api_key_location_from_mouse_down(
+        &mut self,
+        location: AuthLocation,
+        _: &gpui::MouseDownEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(request) = self.active_request_mut()
+            && let Auth::ApiKey { location: loc, .. } = &mut request.auth
+        {
+            *loc = location;
+            self.status_line = format!("API key will be sent in {}.", location.label()).into();
+            self.persist_workspace();
+        }
+        self.auth_location_menu_open = false;
         cx.notify();
     }
 

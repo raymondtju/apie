@@ -1392,7 +1392,13 @@ impl ApiClientApp {
                     .border_b_1()
                     .border_color(theme.border_variant)
                     .bg(theme.toolbar_background)
-                    .children(panels),
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(spacing.cluster_gap())
+                            .children(panels),
+                    ),
             )
             .child(self.render_active_panel(theme, window, cx))
             .into_any_element()
@@ -1514,49 +1520,48 @@ impl ApiClientApp {
                     .flex_1()
                     .min_h_0()
                     .text_color(theme.text)
-                    .child(
-                        ui::panel_header(
-                            "Authentication",
-                            request.auth.summary(),
-                            theme,
-                            typography,
-                        )
-                        .bg(theme.surface_background),
-                    )
                     .children(auth_inputs)
                     .child(
                         div()
                             .px(spacing.base12())
                             .py(spacing.base08())
                             .flex()
-                            .items_center()
-                            .gap(spacing.cluster_gap())
+                            .flex_col()
+                            .gap(spacing.base06())
                             .bg(theme.surface_background)
-                            .child(Self::render_button(
-                                "Cycle Auth Mode",
-                                false,
-                                ButtonStyle::Subtle,
-                                theme,
-                                Self::cycle_auth,
-                                cx,
-                            )),
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(spacing.cluster_gap())
+                                    .child(
+                                        div()
+                                            .text_ui_sm(typography)
+                                            .text_color(theme.text_muted)
+                                            .child("Auth Type"),
+                                    )
+                                    .child(self.render_auth_select(
+                                        &request, theme, typography, cx,
+                                    )),
+                            )
+                            .when(matches!(request.auth, Auth::ApiKey { .. }), |this| {
+                                this.child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(spacing.cluster_gap())
+                                        .child(
+                                            div()
+                                                .text_ui_sm(typography)
+                                                .text_color(theme.text_muted)
+                                                .child("Location"),
+                                        )
+                                        .child(self.render_auth_location_select(
+                                            &request, theme, typography, cx,
+                                        )),
+                                )
+                            }),
                     )
-                    .when(matches!(request.auth, Auth::ApiKey { .. }), |this| {
-                        this.child(
-                            div()
-                                .px(spacing.base12())
-                                .pb(spacing.base08())
-                                .bg(theme.surface_background)
-                                .child(Self::render_button(
-                                    "Cycle API Key Location",
-                                    false,
-                                    ButtonStyle::Transparent,
-                                    theme,
-                                    Self::cycle_api_key_location,
-                                    cx,
-                                )),
-                        )
-                    })
                     .child(
                         div()
                             .px(spacing.base12())
@@ -2664,6 +2669,196 @@ impl ApiClientApp {
                 ),
             ],
         }
+    }
+
+    fn render_auth_select(
+        &self,
+        request: &Request,
+        theme: AppTheme,
+        typography: Typography,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let spacing = Spacing::app();
+        div()
+            .relative()
+            .flex_none()
+            .child(
+                ui::select_trigger_with_size(
+                    "auth-select-trigger",
+                    request.auth.label(),
+                    theme.accent,
+                    self.auth_menu_open,
+                    ui::ButtonSize::Default,
+                    theme,
+                    typography,
+                )
+                .debug_selector(|| "auth-select-trigger".into())
+                .on_click(cx.listener(Self::toggle_auth_menu)),
+            )
+            .when(self.auth_menu_open, |this| {
+                let items: Vec<AnyElement> = [
+                    Auth::None,
+                    Auth::Bearer {
+                        label: "token".into(),
+                        secret_ref: "{{token}}".into(),
+                    },
+                    Auth::Basic {
+                        username: "user".into(),
+                        password: "{{password}}".into(),
+                    },
+                    Auth::ApiKey {
+                        name: "x-api-key".into(),
+                        secret_ref: "{{token}}".into(),
+                        location: AuthLocation::Header,
+                    },
+                ]
+                .into_iter()
+                .enumerate()
+                .map(|(index, mode)| {
+                    let label = mode.label();
+                    let is_current = std::mem::discriminant(&request.auth)
+                        == std::mem::discriminant(&mode);
+                    let debug_selector =
+                        format!("auth-option-{}", label.to_ascii_lowercase().replace(' ', "-"));
+                    let mode_slot = std::sync::Arc::new(mode);
+                    ui::select_menu_item(
+                        ("auth-option", index),
+                        label,
+                        theme.accent,
+                        is_current,
+                        theme,
+                        typography,
+                    )
+                    .debug_selector(move || debug_selector.clone())
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener({
+                            let mode_slot = mode_slot.clone();
+                            move |this, event, window, cx| {
+                                this.set_auth_mode_from_mouse_down(
+                                    (*mode_slot).clone(),
+                                    event,
+                                    window,
+                                    cx,
+                                )
+                            }
+                        }),
+                    )
+                    .on_click(cx.listener(move |this, event, window, cx| {
+                        this.set_auth_mode((*mode_slot).clone(), event, window, cx)
+                    }))
+                    .into_any_element()
+                })
+                .collect();
+
+                this.child(
+                    deferred(
+                        div()
+                            .absolute()
+                            .top(px(26.0))
+                            .left_0()
+                            .id("auth-select-menu")
+                            .debug_selector(|| "auth-select-menu".into())
+                            .w(px(130.0))
+                            .p(spacing.base04())
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(theme.panel_focused_border)
+                            .bg(theme.panel_overlay_background)
+                            .shadow_lg()
+                            .flex()
+                            .flex_col()
+                            .gap(spacing.base04())
+                            .on_mouse_move(|_, _, _| {})
+                            .children(items),
+                    )
+                    .with_priority(3),
+                )
+            })
+    }
+
+    fn render_auth_location_select(
+        &self,
+        request: &Request,
+        theme: AppTheme,
+        typography: Typography,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let spacing = Spacing::app();
+        div()
+            .relative()
+            .flex_none()
+            .child(
+                ui::select_trigger_with_size(
+                    "auth-location-select-trigger",
+                    match &request.auth {
+                        Auth::ApiKey { location, .. } => location.label(),
+                        _ => "header",
+                    },
+                    theme.accent,
+                    self.auth_location_menu_open,
+                    ui::ButtonSize::Default,
+                    theme,
+                    typography,
+                )
+                .debug_selector(|| "auth-location-select-trigger".into())
+                .on_click(cx.listener(Self::toggle_auth_location_menu)),
+            )
+            .when(self.auth_location_menu_open, |this| {
+                let items: Vec<AnyElement> = AuthLocation::all()
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(index, location)| {
+                        let is_current = matches!(&request.auth, Auth::ApiKey { location: loc, .. } if *loc == location);
+                        let debug_selector =
+                            format!("auth-location-option-{}", location.label());
+                        ui::select_menu_item(
+                            ("auth-location-option", index),
+                            location.label(),
+                            theme.accent,
+                            is_current,
+                            theme,
+                            typography,
+                        )
+                        .debug_selector(move || debug_selector.clone())
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, event, window, cx| {
+                                this.set_api_key_location_from_mouse_down(location, event, window, cx)
+                            }),
+                        )
+                        .on_click(cx.listener(move |this, event, window, cx| {
+                            this.set_api_key_location(location, event, window, cx)
+                        }))
+                        .into_any_element()
+                    })
+                    .collect();
+
+                this.child(
+                    deferred(
+                        div()
+                            .absolute()
+                            .top(px(26.0))
+                            .left_0()
+                            .id("auth-location-select-menu")
+                            .debug_selector(|| "auth-location-select-menu".into())
+                            .w(px(120.0))
+                            .p(spacing.base04())
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(theme.panel_focused_border)
+                            .bg(theme.panel_overlay_background)
+                            .shadow_lg()
+                            .flex()
+                            .flex_col()
+                            .gap(spacing.base04())
+                            .on_mouse_move(|_, _, _| {})
+                            .children(items),
+                    )
+                    .with_priority(3),
+                )
+            })
     }
 
     fn render_environment(

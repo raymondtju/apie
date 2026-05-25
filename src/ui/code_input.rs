@@ -68,9 +68,11 @@ pub(crate) struct CodeInput {
     syntax_colors: SyntaxColors,
     read_only: bool,
     drag_in_progress: bool,
-    selected_range: Range<usize>,
+    pub(crate) selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
+    pub(crate) search_highlights: Vec<Range<usize>>,
+    pub(crate) active_search_highlight: Option<Range<usize>>,
     collapsed_folds: BTreeSet<usize>,
     last_layout: Option<CachedCodeLayout>,
     last_bounds: Option<Bounds<Pixels>>,
@@ -79,7 +81,7 @@ pub(crate) struct CodeInput {
     cursor_blink_enabled: bool,
     cursor_blink_epoch: usize,
     cursor_blink_task: Option<Task<()>>,
-    line_index: LineIndex,
+    pub(crate) line_index: LineIndex,
     fold_cache: Option<FoldCache>,
     /// Bumped on every content change. Used as the cache invalidation
     /// key so shaped lines from the previous revision are dropped on
@@ -139,7 +141,7 @@ enum GutterMarker {
 /// for the final line. This is the lightweight stand-in for Zed's rope
 /// crate: O(1) line count, O(log n) row<->offset conversion.
 #[derive(Clone, Default)]
-struct LineIndex {
+pub(crate) struct LineIndex {
     /// Byte offsets of each line's first character. `starts[0]` is always 0.
     starts: Vec<usize>,
     total_len: usize,
@@ -178,7 +180,7 @@ impl LineIndex {
     }
 
     /// Returns the row containing byte offset `offset`.
-    fn row_for_offset(&self, offset: usize) -> usize {
+    pub(crate) fn row_for_offset(&self, offset: usize) -> usize {
         match self.starts.binary_search(&offset) {
             Ok(row) => row,
             Err(row) => row.saturating_sub(1),
@@ -423,6 +425,8 @@ impl CodeInput {
             last_content_width: px(0.),
             background_color: rgba(0x00000000).into(),
             gutter_border_color: None,
+            search_highlights: Vec::new(),
+            active_search_highlight: None,
         }
     }
 
@@ -447,6 +451,19 @@ impl CodeInput {
         self.rebuild_line_index(None);
         self.prune_collapsed_folds();
         self.reset_cursor_blink(cx);
+        self.search_highlights.clear();
+        self.active_search_highlight = None;
+    }
+
+    pub(crate) fn set_search_highlights(
+        &mut self,
+        highlights: Vec<Range<usize>>,
+        active: Option<Range<usize>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.search_highlights = highlights;
+        self.active_search_highlight = active;
+        cx.notify();
     }
 
     pub(crate) fn value(&self) -> String {
@@ -1285,6 +1302,63 @@ impl CodeInput {
         quads
     }
 
+    fn search_highlight_quads(
+        &self,
+        bounds: Bounds<Pixels>,
+        lines: &[ShapedLine],
+        line_starts: &[usize],
+        line_ends: &[usize],
+        first_line_index: usize,
+        line_height: Pixels,
+        text_left: Pixels,
+    ) -> Vec<PaintQuad> {
+        if self.search_highlights.is_empty() {
+            return Vec::new();
+        }
+        let mut quads = Vec::new();
+        let normal_color: gpui::Hsla = rgba(0xfad02c40).into(); // yellow highlight
+        let active_color: gpui::Hsla = rgba(0xff9e6480).into(); // active orange highlight
+
+        let mut line_origin_y = bounds.top() + line_height * first_line_index as f32;
+        for ((line, line_start), line_end) in lines
+            .iter()
+            .zip(line_starts.iter().copied())
+            .zip(line_ends.iter().copied())
+        {
+            for highlight in &self.search_highlights {
+                let segment_start = highlight.start.max(line_start);
+                let segment_end = highlight.end.min(line_end);
+                if segment_start < segment_end {
+                    let local_start = segment_start.saturating_sub(line_start);
+                    let local_end = segment_end.saturating_sub(line_start);
+                    let start_x = line.x_for_index(local_start.min(line.len()));
+                    let end_x = line
+                        .x_for_index(local_end.min(line.len()))
+                        .max(start_x + px(2.0));
+
+                    let is_active = self.active_search_highlight.as_ref().is_some_and(|active| {
+                        active.start == highlight.start && active.end == highlight.end
+                    });
+                    let color = if is_active {
+                        active_color
+                    } else {
+                        normal_color
+                    };
+
+                    quads.push(fill(
+                        Bounds::from_corners(
+                            point(text_left + start_x, line_origin_y),
+                            point(text_left + end_x, line_origin_y + line_height),
+                        ),
+                        color,
+                    ));
+                }
+            }
+            line_origin_y += line_height;
+        }
+        quads
+    }
+
     fn sanitize_content(text: &str) -> String {
         text.replace("\r\n", "\n").replace('\r', "\n")
     }
@@ -1659,6 +1733,7 @@ struct CodePrepaintState {
     layout: CachedCodeLayout,
     cursor: Option<PaintQuad>,
     selection: Vec<PaintQuad>,
+    search_highlights: Vec<PaintQuad>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2332,6 +2407,19 @@ impl Element for CodeElement {
                 layout.text_left,
             )
         };
+        let search_highlights = if use_placeholder {
+            Vec::new()
+        } else {
+            input.search_highlight_quads(
+                bounds,
+                &layout.lines,
+                &layout.line_starts,
+                &layout.line_ends,
+                layout.first_line_index,
+                layout.line_height,
+                layout.text_left,
+            )
+        };
         let cursor = if !use_placeholder && input.selected_range.is_empty() && input.cursor_visible
         {
             position_for_index_in_layout(input.cursor_offset(), bounds, &layout).map(
@@ -2353,6 +2441,9 @@ impl Element for CodeElement {
             None
         };
 
+        // Explicitly drop input borrow to satisfy borrow checker
+        let _ = input;
+
         // Store layout for position_for_index + hit testing, and the computed
         // content width so the *next* request_layout can declare a proper
         // horizontal scrollable size.
@@ -2368,6 +2459,7 @@ impl Element for CodeElement {
             layout,
             cursor,
             selection,
+            search_highlights,
         }
     }
 
@@ -2395,6 +2487,9 @@ impl Element for CodeElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
+        for highlight in prepaint.search_highlights.drain(..) {
+            window.paint_quad(highlight);
+        }
         for selection in prepaint.selection.drain(..) {
             window.paint_quad(selection);
         }

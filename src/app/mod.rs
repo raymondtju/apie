@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashSet},
+    ops::Range,
     path::PathBuf,
     time::Instant,
 };
@@ -70,7 +71,11 @@ actions!(
         DeleteCollectionSelection,
         RenameCollectionSelection,
         NewTab,
-        CloseTab
+        CloseTab,
+        ToggleFind,
+        FindNext,
+        FindPrevious,
+        CloseFind
     ]
 );
 
@@ -85,6 +90,12 @@ pub(crate) fn bind_app_keys(cx: &mut App) {
         KeyBinding::new("ctrl-,", OpenSettings, None),
         KeyBinding::new("ctrl-t", NewTab, None),
         KeyBinding::new("ctrl-w", CloseTab, None),
+        KeyBinding::new("ctrl-f", ToggleFind, None),
+        KeyBinding::new("escape", CloseFind, Some("FindQueryInput")),
+        KeyBinding::new("enter", FindNext, Some("FindQueryInput")),
+        KeyBinding::new("shift-enter", FindPrevious, Some("FindQueryInput")),
+        KeyBinding::new("f3", FindNext, None),
+        KeyBinding::new("shift-f3", FindPrevious, None),
     ]);
 }
 
@@ -341,6 +352,13 @@ pub(crate) struct ApiClientApp {
     in_flight_requests: BTreeMap<usize, InFlightRequest>,
     request_started_at: Option<Instant>,
     _request_timer: Option<gpui::Task<()>>,
+    pub(crate) find_state: Option<FindState>,
+}
+
+pub(crate) struct FindState {
+    pub(crate) query_input: Entity<TextInput>,
+    pub(crate) matches: Vec<Range<usize>>,
+    pub(crate) active_match_idx: Option<usize>,
 }
 
 pub(crate) struct InFlightRequest {
@@ -451,6 +469,7 @@ impl ApiClientApp {
             expanded_folders,
             expanded_collections,
             request_started_at: None,
+            find_state: None,
         };
         app.refresh_workspaces_list();
         app

@@ -2234,7 +2234,11 @@ impl ApiClientApp {
         }))
     }
 
-    fn formatted_body_for(&mut self, request_id: usize, response: &ResponseRecord) -> SharedString {
+    pub(crate) fn formatted_body_for(
+        &mut self,
+        request_id: usize,
+        response: &ResponseRecord,
+    ) -> SharedString {
         let mode = self.body_view_mode;
         if let Some(cache) = self.formatted_body_cache.as_ref() {
             if cache.matches(request_id, mode, &response.body) {
@@ -2417,9 +2421,119 @@ impl ApiClientApp {
                             .child(response_code_input),
                     )
                     .child(scrollbar)
-                    .child(horizontal_scrollbar),
+                    .child(horizontal_scrollbar)
+                    .children(if self.find_state.is_some() {
+                        Some(self.render_find_bar(theme, cx))
+                    } else {
+                        None
+                    }),
             )
             .into_any_element()
+    }
+
+    fn render_find_bar(&mut self, theme: AppTheme, cx: &mut Context<Self>) -> impl IntoElement {
+        let typography = self.typography();
+        let spacing = Spacing::app();
+
+        let find_state = self.find_state.as_ref().unwrap();
+        let query_input = find_state.query_input.clone();
+
+        let status_label = if find_state.matches.is_empty() {
+            if query_input.read(cx).value().is_empty() {
+                "".to_string()
+            } else {
+                "No matches".to_string()
+            }
+        } else {
+            let current = find_state.active_match_idx.unwrap_or(0) + 1;
+            format!("{} of {}", current, find_state.matches.len())
+        };
+
+        div()
+            .absolute()
+            .top(spacing.base08())
+            .right(spacing.base24()) // padding from the right vertical scrollbar
+            .flex()
+            .items_center()
+            .gap(spacing.base06())
+            .px(spacing.base08())
+            .h(px(28.0))
+            .bg(theme.panel_overlay_background)
+            .border_1()
+            .border_color(theme.border)
+            .rounded(px(4.0))
+            .child(ui::icon(
+                IconName::Search,
+                ui::IconSize::Small,
+                theme.text_muted,
+            ))
+            .child(
+                div()
+                    .w(px(140.0))
+                    .h(px(20.0))
+                    .key_context("FindQueryInput")
+                    .child(query_input),
+            )
+            .child(
+                div()
+                    .text_color(theme.text_muted)
+                    .text_ui_xs(typography)
+                    .child(SharedString::from(status_label)),
+            )
+            .child(div().w(px(1.0)).h(px(16.0)).bg(theme.border))
+            .child(
+                div()
+                    .id("find-prev-button")
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(16.0))
+                    .h(px(16.0))
+                    .rounded(px(2.0))
+                    .hover(|style| style.bg(theme.element_hover))
+                    .active(|style| style.bg(theme.element_active))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.find_previous_from_action(&FindPrevious, window, cx);
+                    }))
+                    .text_color(theme.icon)
+                    .text_ui_sm(typography)
+                    .child("▲"),
+            )
+            .child(
+                div()
+                    .id("find-next-button")
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(16.0))
+                    .h(px(16.0))
+                    .rounded(px(2.0))
+                    .hover(|style| style.bg(theme.element_hover))
+                    .active(|style| style.bg(theme.element_active))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.find_next_from_action(&FindNext, window, cx);
+                    }))
+                    .text_color(theme.icon)
+                    .text_ui_sm(typography)
+                    .child("▼"),
+            )
+            .child(div().w(px(1.0)).h(px(16.0)).bg(theme.border))
+            .child(
+                div()
+                    .id("find-close-button")
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(16.0))
+                    .h(px(16.0))
+                    .rounded(px(2.0))
+                    .hover(|style| style.bg(theme.element_hover))
+                    .active(|style| style.bg(theme.element_active))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.close_find_from_action(&CloseFind, window, cx);
+                    }))
+                    .child(ui::icon(IconName::Close, ui::IconSize::Small, theme.icon)),
+            )
     }
 
     fn render_binary_response_placeholder(
@@ -4107,6 +4221,10 @@ impl Render for ApiClientApp {
             .on_action(cx.listener(Self::rename_collection_selection_from_action))
             .on_action(cx.listener(Self::new_tab_from_action))
             .on_action(cx.listener(Self::close_tab_from_action))
+            .on_action(cx.listener(Self::toggle_find))
+            .on_action(cx.listener(Self::find_next_from_action))
+            .on_action(cx.listener(Self::find_previous_from_action))
+            .on_action(cx.listener(Self::close_find_from_action))
             .on_mouse_move(cx.listener(Self::update_pane_resize))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::finish_pane_resize))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::finish_pane_resize))

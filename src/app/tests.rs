@@ -2377,3 +2377,143 @@ fn workspace_creation_and_switching(cx: &mut TestAppContext) {
         assert_eq!(app.workspace.name, "Local API Workspace");
     });
 }
+
+#[gpui::test]
+fn find_in_response_body(cx: &mut TestAppContext) {
+    cx.update(bind_text_input_keys);
+    cx.update(bind_code_input_keys);
+    cx.update(bind_app_keys);
+    let temp_dir = tempfile::tempdir().unwrap();
+    let settings_path = temp_dir.path().join("settings.json");
+    let (app, cx) =
+        cx.add_window_view(|_, cx| ApiClientApp::new_with_settings_path(cx, settings_path));
+
+    // 1. Mock request and response body
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.add_request(&ClickEvent::default(), window, cx);
+            let request = app.active_request_mut().expect("request should exist");
+            request.response = Some(ResponseRecord {
+                status: 200,
+                status_text: "OK".into(),
+                duration_ms: 1,
+                size_bytes: 33,
+                headers: Vec::new(),
+                cookies: Vec::new(),
+                timing: None,
+                body: "Hello World! World is beautiful.".into(),
+            });
+            app.active_response_panel = ResponsePanel::Body;
+            app.body_view_mode = BodyViewMode::Raw;
+        });
+    });
+
+    // Draw window once to populate response_body_inputs
+    cx.debug_bounds("response-body-code-scroll")
+        .expect("response body code input should render");
+
+    // Verify initial state
+    app.read_with(cx, |app, cx| {
+        assert!(app.find_state.is_none());
+        let request_id = app.active_request_id.expect("request should be active");
+        let input = app
+            .response_body_inputs
+            .get(&(request_id, BodyViewMode::Raw))
+            .expect("response input should exist");
+        assert!(input.read(cx).search_highlights.is_empty());
+    });
+
+    // 2. Open Find Bar via shortcut/action
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.toggle_find(&ToggleFind, window, cx);
+        });
+    });
+
+    app.read_with(cx, |app, _| {
+        assert!(app.find_state.is_some());
+    });
+
+    // 3. Simulate typing the search query "World"
+    cx.simulate_keystrokes("w o r l d");
+
+    app.read_with(cx, |app, cx| {
+        let find_state = app.find_state.as_ref().unwrap();
+        assert_eq!(find_state.query_input.read(cx).value(), "world");
+        assert_eq!(find_state.matches.len(), 2);
+        assert_eq!(find_state.active_match_idx, Some(0));
+
+        let request_id = app.active_request_id.expect("request should be active");
+        let input = app
+            .response_body_inputs
+            .get(&(request_id, BodyViewMode::Raw))
+            .expect("response input should exist");
+        assert_eq!(input.read(cx).search_highlights.len(), 2);
+        assert_eq!(
+            input
+                .read(cx)
+                .active_search_highlight
+                .as_ref()
+                .unwrap()
+                .start,
+            6 // byte index of the first "World"
+        );
+    });
+
+    // 4. Navigate to next match
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.find_next_from_action(&FindNext, window, cx);
+        });
+    });
+
+    app.read_with(cx, |app, cx| {
+        let find_state = app.find_state.as_ref().unwrap();
+        assert_eq!(find_state.active_match_idx, Some(1));
+
+        let request_id = app.active_request_id.expect("request should be active");
+        let input = app
+            .response_body_inputs
+            .get(&(request_id, BodyViewMode::Raw))
+            .expect("response input should exist");
+        assert_eq!(
+            input
+                .read(cx)
+                .active_search_highlight
+                .as_ref()
+                .unwrap()
+                .start,
+            13 // byte index of the second "World"
+        );
+    });
+
+    // 5. Navigate to previous match
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.find_previous_from_action(&FindPrevious, window, cx);
+        });
+    });
+
+    app.read_with(cx, |app, _| {
+        let find_state = app.find_state.as_ref().unwrap();
+        assert_eq!(find_state.active_match_idx, Some(0));
+    });
+
+    // 6. Close the search bar
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.close_find_from_action(&CloseFind, window, cx);
+        });
+    });
+
+    app.read_with(cx, |app, cx| {
+        assert!(app.find_state.is_none());
+
+        let request_id = app.active_request_id.expect("request should be active");
+        let input = app
+            .response_body_inputs
+            .get(&(request_id, BodyViewMode::Raw))
+            .expect("response input should exist");
+        assert!(input.read(cx).search_highlights.is_empty());
+    });
+}

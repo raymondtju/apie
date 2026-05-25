@@ -225,6 +225,7 @@ pub(crate) struct Request {
     pub(crate) method: Method,
     pub(crate) url: SharedString,
     pub(crate) query: Vec<Header>,
+    pub(crate) path_params: Vec<Header>,
     pub(crate) proxy_url: Option<SharedString>,
     pub(crate) auth: Auth,
     pub(crate) headers: Vec<Header>,
@@ -376,6 +377,7 @@ pub(crate) enum ResponsePanel {
 pub(crate) enum PairRowKind {
     Param,
     Header,
+    Path,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -964,8 +966,9 @@ impl Request {
             id,
             name: request.name.into(),
             method: Method::from_domain(request.method),
-            url: request.url.into(),
+            url: request.url.clone().into(),
             query: request.query.into_iter().map(Header::from_domain).collect(),
+            path_params: vec![],
             proxy_url: request.proxy_url.map(Into::into),
             auth: Auth::from_domain(request.auth),
             headers: request
@@ -1048,6 +1051,7 @@ impl Request {
     pub(crate) fn to_resolved_domain(&self, environment: &Environment) -> Result<domain::Request, String> {
         let mut request = self.to_domain();
         request.url = resolve_template(&request.url, environment)?;
+        request.url = resolve_path_params(&request.url, &self.path_params)?;
         request.query = resolve_headers(&request.query, environment)?;
         request.headers = resolve_headers(&request.headers, environment)?;
         request.body = match request.body {

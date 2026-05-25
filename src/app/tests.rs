@@ -20,6 +20,7 @@ fn resolves_environment_params_headers_auth_and_body_before_send() {
         url: "{{base_url}}/users".into(),
         query: vec![Header::new("q", "{{token}}")],
         proxy_url: None,
+            path_params: vec![],
         auth: Auth::ApiKey {
             name: "x-api-key".into(),
             secret_ref: "{{token}}".into(),
@@ -58,6 +59,7 @@ fn body_is_only_emitted_for_body_methods() {
         url: "https://api.example.test/users".into(),
         query: vec![],
         proxy_url: None,
+            path_params: vec![],
         auth: Auth::None,
         headers: vec![],
         content_type: "application/json".into(),
@@ -86,6 +88,7 @@ fn blank_editable_rows_are_not_sent() {
         url: "https://api.example.test/users".into(),
         query: vec![Header::new("", ""), Header::new("page", "1")],
         proxy_url: None,
+            path_params: vec![],
         auth: Auth::None,
         headers: vec![
             Header::new("", ""),
@@ -199,6 +202,7 @@ fn test_request(id: usize) -> Request {
         url: "".into(),
         query: vec![],
         proxy_url: None,
+            path_params: vec![],
         auth: Auth::None,
         headers: vec![],
         content_type: "application/json".into(),

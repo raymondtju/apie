@@ -150,6 +150,63 @@ pub(crate) fn response_body_for_mode(body: &str, mode: BodyViewMode) -> SharedSt
     }
 }
 
+/// Extract `{paramName}` patterns from a URL and return them as path parameter
+/// rows with empty values. Used when loading a request from disk so path params
+/// are automatically available for editing.
+pub(crate) fn path_params_from_url(url: &str) -> Vec<Header> {
+    let mut params = Vec::new();
+    let mut remaining = url;
+    while let Some(start) = remaining.find('{') {
+        let after_open = &remaining[start + 1..];
+        if let Some(end) = after_open.find('}') {
+            let name = after_open[..end].trim();
+            if !name.starts_with('{') && !name.is_empty() {
+                let owned_name: String = name.to_string();
+                if !params.iter().any(|p: &Header| p.name.as_ref() == owned_name) {
+                    params.push(Header::new(owned_name, ""));
+                }
+            }
+            remaining = &after_open[end + 1..];
+        } else {
+            break;
+        }
+    }
+    params
+}
+
+/// Resolve `{paramName}` path parameters in a URL by substituting values
+/// from the provided path params list. Returns an error if a `{name}` pattern
+/// is found in the URL but no matching enabled path param exists with a value.
+pub(crate) fn resolve_path_params(url: &str, params: &[Header]) -> Result<String, String> {
+    let mut result = url.to_string();
+    for param in params {
+        if !param.enabled {
+            continue;
+        }
+        let pattern = format!("{{{}}}", param.name.trim());
+        if result.contains(&pattern) {
+            if param.value.trim().is_empty() {
+                return Err(format!(
+                    "Path parameter `{}` has no value.",
+                    param.name.trim()
+                ));
+            }
+            result = result.replace(&pattern, param.value.trim());
+        }
+    }
+    // Check for any unresolved {name} patterns (user forgot to add a row)
+    if let Some(start) = result.find('{') {
+        if let Some(end) = result[start..].find('}') {
+            let name = &result[start + 1..start + end];
+            return Err(format!(
+                "Missing path parameter `{}` — add it to the Path Parameters section.",
+                name
+            ));
+        }
+    }
+    Ok(result)
+}
+
 /// Check if a response body looks like binary data. Returns `true` if the
 /// body contains the Unicode replacement character (U+FFFD), which means
 /// the original bytes were not valid UTF-8 and are likely binary.

@@ -35,9 +35,12 @@ impl ApiClientApp {
         self.method_menu_open = false;
         self.request_context_menu = None;
         self.folder_context_menu = None;
+        let url = request.url.clone();
+        let name = request.name.clone();
         self.url_input
-            .update(cx, |input, cx| input.set_content(request.url.clone(), cx));
-        self.status_line = format!("Selected {}", request.name).into();
+            .update(cx, |input, cx| input.set_content(url.clone(), cx));
+        self.reconcile_path_params_from_url();
+        self.status_line = format!("Selected {name}").into();
         cx.notify();
     }
 
@@ -311,6 +314,7 @@ impl ApiClientApp {
             method: Method::Get,
             url: "".into(),
             query: vec![Header::new("", "")],
+            path_params: path_params_from_url(""),
             proxy_url: None,
             auth: Auth::None,
             headers: vec![Header::new("Accept", "application/json")],
@@ -497,6 +501,45 @@ impl ApiClientApp {
         if let Some(request) = self.active_request_mut() {
             if request.query.is_empty() {
                 request.query.push(Header::new("", ""));
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn add_path_row(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(request) = self.active_request_mut() {
+            request.path_params.push(Header::new("", ""));
+            self.status_line = "Added path parameter row.".into();
+            self.persist_workspace();
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_path_enabled(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(request) = self.active_request_mut() {
+            if let Some(param) = request.path_params.get_mut(index) {
+                param.enabled = !param.enabled;
+                self.persist_workspace();
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn remove_path_row(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(request) = self.active_request_mut() {
+            if request.path_params.len() > 1 && index < request.path_params.len() {
+                request.path_params.remove(index);
+                self.persist_workspace();
+            }
+        }
+        cx.notify();
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn ensure_path_row(&mut self) {
+        if let Some(request) = self.active_request_mut() {
+            if request.path_params.is_empty() {
+                request.path_params.push(Header::new("", ""));
             }
         }
     }

@@ -90,6 +90,7 @@ pub(crate) fn bind_app_keys(cx: &mut App) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Panel {
     Params,
+    Path,
     Headers,
     Auth,
     Body,
@@ -99,6 +100,7 @@ impl Panel {
     fn label(self) -> &'static str {
         match self {
             Self::Params => "Params",
+            Self::Path => "Path",
             Self::Headers => "Headers",
             Self::Auth => "Auth",
             Self::Body => "Body",

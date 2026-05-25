@@ -1304,6 +1304,16 @@ impl ApiClientApp {
             .into_any_element(),
             Self::render_scoped_button(
                 "request-panel",
+                Panel::Path.label(),
+                self.active_panel == Panel::Path,
+                ButtonStyle::Transparent,
+                theme,
+                |this, _, window, cx| this.set_panel(Panel::Path, window, cx),
+                cx,
+            )
+            .into_any_element(),
+            Self::render_scoped_button(
+                "request-panel",
                 Panel::Headers.label(),
                 self.active_panel == Panel::Headers,
                 ButtonStyle::Transparent,
@@ -1419,13 +1429,46 @@ impl ApiClientApp {
                 .into_any_element();
         };
         match self.active_panel {
-            Panel::Params => {
-                self.ensure_param_row();
+            Panel::Path => {
                 let request = self.active_request().cloned().unwrap();
                 let request_id = request.id;
-                let row_count = request.query.len();
-                let can_remove = row_count > 1;
-                let rows = request
+
+                // Path parameters are auto-synced from {name} patterns in the URL.
+                let path_rows: Vec<AnyElement> = request
+                    .path_params
+                    .iter()
+                    .enumerate()
+                    .map(|(index, param)| {
+                        self.render_editable_pair_row_with_controls(
+                            format!("req:{request_id}:path:{index}"),
+                            param,
+                            index,
+                            PairRowKind::Path,
+                            true,
+                            "Path parameter",
+                            "Value",
+                            theme,
+                            typography,
+                            window,
+                            cx,
+                        )
+                    })
+                    .collect();
+
+                ui::flat_section(theme)
+                    .flex_1()
+                    .min_h_0()
+                    .children(path_rows)
+                    .into_any_element()
+            }
+            Panel::Params => {
+                let request = self.active_request().cloned().unwrap();
+                let request_id = request.id;
+
+                self.ensure_param_row();
+                let param_count = request.query.len();
+                let can_remove_param = param_count > 1;
+                let param_rows: Vec<AnyElement> = request
                     .query
                     .iter()
                     .enumerate()
@@ -1435,7 +1478,7 @@ impl ApiClientApp {
                             param,
                             index,
                             PairRowKind::Param,
-                            can_remove,
+                            can_remove_param,
                             "Query parameter",
                             "Value",
                             theme,
@@ -1444,11 +1487,12 @@ impl ApiClientApp {
                             cx,
                         )
                     })
-                    .collect::<Vec<_>>();
+                    .collect();
+
                 ui::flat_section(theme)
                     .flex_1()
                     .min_h_0()
-                    .children(rows)
+                    .children(param_rows)
                     .child(
                         div()
                             .px(spacing.base12())
@@ -2521,6 +2565,7 @@ impl ApiClientApp {
                         cx.listener(move |this, _, _, cx| match kind {
                             PairRowKind::Param => this.toggle_param_enabled(index, cx),
                             PairRowKind::Header => this.toggle_header_enabled(index, cx),
+                            PairRowKind::Path => this.toggle_path_enabled(index, cx),
                         }),
                     ),
             )
@@ -2575,6 +2620,7 @@ impl ApiClientApp {
                                 cx.listener(move |this, _, _, cx| match kind {
                                     PairRowKind::Param => this.remove_param_row(index, cx),
                                     PairRowKind::Header => this.remove_header_row(index, cx),
+                                    PairRowKind::Path => this.remove_path_row(index, cx),
                                 }),
                             )
                     })

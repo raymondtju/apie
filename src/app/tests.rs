@@ -1,6 +1,6 @@
 use super::*;
 use crate::ui::{bind_code_input_keys, bind_text_input_keys};
-use gpui::{ClickEvent, Modifiers, ScrollWheelEvent, TestAppContext};
+use gpui::{ClickEvent, Modifiers, ScrollWheelEvent, TestAppContext, point};
 use std::collections::HashSet;
 use std::io::{Read, Write};
 
@@ -1501,6 +1501,8 @@ fn response_pretty_and_raw_use_code_input(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn large_response_body_only_renders_visible_code_lines(cx: &mut TestAppContext) {
+    // See docs/references/large-response-test-endpoints.md for real-world multi-MB / many-line endpoints
+    // to manually exercise the Large Response Viewer, warning banner, and CodeInput on live data.
     cx.update(bind_text_input_keys);
     cx.update(bind_code_input_keys);
     cx.update(bind_app_keys);
@@ -1708,7 +1710,63 @@ fn response_body_wheel_scroll_uses_native_scroll_handle(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
+fn response_body_with_long_lines_exposes_horizontal_scroll_range(cx: &mut TestAppContext) {
+    // Regression test: when the CodeInput contains lines wider than the
+    // viewport, the parent overflow_scroll container must detect real
+    // horizontal overflow so wheel/bar scrolling can move the text.
+    // The container relies on the CodeInput wrapper being able to grow
+    // beyond viewport width (`min_w_full`, not `w_full`).
+    cx.update(bind_text_input_keys);
+    cx.update(bind_code_input_keys);
+    cx.update(bind_app_keys);
+    let temp_dir = tempfile::tempdir().unwrap();
+    let settings_path = temp_dir.path().join("settings.json");
+    let (app, cx) =
+        cx.add_window_view(|_, cx| ApiClientApp::new_with_settings_path(cx, settings_path));
+
+    // A single very long line that will visibly exceed any reasonable
+    // viewport width.
+    let wide_line: String = "x".repeat(5_000);
+    let body = format!("{wide_line}\n{wide_line}\n{wide_line}");
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.add_request(&ClickEvent::default(), window, cx);
+            let request = app.active_request_mut().expect("request should exist");
+            request.response = Some(ResponseRecord {
+                status: 200,
+                status_text: "OK".into(),
+                duration_ms: 1,
+                size_bytes: body.len(),
+                headers: Vec::new(),
+                cookies: Vec::new(),
+                timing: None,
+                body: body.clone().into(),
+            });
+            app.active_response_panel = ResponsePanel::Body;
+            app.body_view_mode = BodyViewMode::Raw;
+        });
+    });
+
+    cx.debug_bounds("response-code-input")
+        .expect("response code input should render");
+
+    // After at least one frame, the parent overflow_scroll container should
+    // see that the content is wider than the viewport.
+    app.read_with(cx, |app, _cx| {
+        let max_offset = app.response_scroll_handle.max_offset();
+        assert!(
+            max_offset.width > px(0.0),
+            "long lines should produce horizontal overflow (max_offset.width={:?})",
+            max_offset.width
+        );
+    });
+}
+
+#[gpui::test]
 fn response_body_scroll_into_large_body_keeps_final_colored_cache(cx: &mut TestAppContext) {
+    // See docs/references/large-response-test-endpoints.md for real-world multi-MB / many-line endpoints
+    // to manually exercise the Large Response Viewer, warning banner, and CodeInput on live data.
     cx.update(bind_text_input_keys);
     cx.update(bind_code_input_keys);
     cx.update(bind_app_keys);
@@ -2009,7 +2067,9 @@ fn body_editor_double_click_selects_word_not_all(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn oversize_response_body_renders_save_to_file_placeholder(cx: &mut TestAppContext) {
+fn large_response_body_still_renders_code_input(cx: &mut TestAppContext) {
+    // See docs/references/large-response-test-endpoints.md for real-world multi-MB / many-line endpoints
+    // to manually exercise the Large Response Viewer, warning banner, and CodeInput on live data.
     cx.update(bind_text_input_keys);
     cx.update(bind_code_input_keys);
     cx.update(bind_app_keys);
@@ -2018,8 +2078,9 @@ fn oversize_response_body_renders_save_to_file_placeholder(cx: &mut TestAppConte
     let (app, cx) =
         cx.add_window_view(|_, cx| ApiClientApp::new_with_settings_path(cx, settings_path));
 
-    // Build a body just over the 2 MB inline cap.
-    let body: String = std::iter::repeat('a').take(2 * 1024 * 1024 + 16).collect();
+    // Body above the new LARGE_RESPONSE_WARNING_BYTES threshold.
+    // We expect the CodeInput to still be used (with a warning banner).
+    let body: String = std::iter::repeat('a').take(10 * 1024 * 1024 + 100).collect();
     cx.update(|window, cx| {
         app.update(cx, |app, cx| {
             app.add_request(&ClickEvent::default(), window, cx);
@@ -2038,20 +2099,19 @@ fn oversize_response_body_renders_save_to_file_placeholder(cx: &mut TestAppConte
                 body: body.clone().into(),
             });
             app.active_response_panel = ResponsePanel::Body;
-            app.body_view_mode = BodyViewMode::Pretty;
+            app.body_view_mode = BodyViewMode::Raw;
         });
     });
 
-    cx.debug_bounds("response-body-oversize-placeholder")
-        .expect("oversize body should render the placeholder");
-    assert!(
-        cx.debug_bounds("response-code-input").is_none(),
-        "oversize body should bypass the code input"
-    );
+    // With the Large Response Viewer feature, we should still get the CodeInput.
+    cx.debug_bounds("response-code-input")
+        .expect("large body should still render the code input (with warning banner)");
 }
 
 #[gpui::test]
 fn very_large_response_body_cursor_movement_stays_responsive(cx: &mut TestAppContext) {
+    // See docs/references/large-response-test-endpoints.md for real-world multi-MB / many-line endpoints
+    // to manually exercise the Large Response Viewer, warning banner, and CodeInput on live data.
     cx.update(bind_text_input_keys);
     cx.update(bind_code_input_keys);
     cx.update(bind_app_keys);

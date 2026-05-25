@@ -76,15 +76,7 @@ impl AppTheme {
         }
     }
 
-    pub fn timing_phase_name(index: usize) -> &'static str {
-        match index {
-            0 => "DNS Lookup",
-            1 => "Connect",
-            2 => "TLS Handshake",
-            3 => "TTFB",
-            _ => "Transfer",
-        }
-    }
+
 
     pub fn for_mode(mode: ThemeMode) -> Self {
         match mode {

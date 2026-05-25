@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashSet},
     path::PathBuf,
+    time::Instant,
 };
 
 pub(crate) use crate::settings::{
@@ -15,7 +16,7 @@ pub(crate) use gpui::{
     AnyElement, App, ClipboardItem, Context, Corner, CursorStyle, Div, Entity, FocusHandle,
     Focusable, InteractiveElement, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, Point, Render, ResizeEdge, ScrollHandle, SharedString,
-    StatefulInteractiveElement, Window, WindowControlArea, actions, anchored, deferred, div, point,
+    StatefulInteractiveElement, Window, WindowControlArea, actions, anchored, deferred, div,
     prelude::*, px, rgb,
 };
 
@@ -27,12 +28,19 @@ pub(crate) mod resolve;
 pub(crate) use types::*;
 pub(crate) use resolve::*;
 
-/// Above this byte count, the response panel skips rendering the body
-/// inline and shows a "Body too large to render inline" placeholder
-/// with a Save to file action. Picked to keep the UI thread under ~16ms
-/// even for pathologically minified payloads. Mirrors Zed's
-/// `MAX_LINE_LEN_FOR_INLINE_RENDER` style guard from `crates/editor/`.
-const MAX_INLINE_RESPONSE_BODY_BYTES: usize = 2 * 1024 * 1024;
+/// Response bodies above this size trigger a warning banner in the UI.
+/// We still attempt to render them (Raw by default), but warn the user
+/// that Pretty mode may be slow or memory-intensive.
+pub(crate) const LARGE_RESPONSE_WARNING_BYTES: usize = 10 * 1024 * 1024; // 10 MiB
+
+/// Above this size we skip automatic JSON pretty-printing to protect
+/// UI responsiveness and memory usage. The user can still explicitly
+/// request Pretty mode for the current response.
+pub(crate) const PRETTY_PRINT_GUARD_BYTES: usize = 5 * 1024 * 1024; // 5 MiB
+
+// Historical note: We previously had a hard 2 MiB cap
+// (`MAX_INLINE_RESPONSE_BODY_BYTES`) that completely bypassed CodeInput.
+// This has been removed in favor of the soft thresholds above.
 
 /// Cache for the most recently formatted response body. Keyed by the
 /// pointer identity of the underlying `SharedString` storage so that
@@ -41,7 +49,6 @@ pub(crate) struct FormattedBodyCache {
     request_id: usize,
     mode: BodyViewMode,
     body_ptr: *const u8,
-    body_len: usize,
     formatted: SharedString,
 }
 
@@ -256,8 +263,11 @@ pub(crate) struct ApiClientApp {
     response_body_inputs: BTreeMap<(usize, BodyViewMode), Entity<CodeInput>>,
     response_scroll_handle: ScrollHandle,
     response_scrollbar: Entity<ui::VerticalScrollbar>,
+    response_horizontal_scrollbar: Entity<ui::HorizontalScrollbar>,
     formatted_body_cache: Option<FormattedBodyCache>,
     in_flight_requests: BTreeMap<usize, InFlightRequest>,
+    request_started_at: Option<Instant>,
+    _request_timer: Option<gpui::Task<()>>,
 }
 
 pub(crate) struct InFlightRequest {
@@ -299,6 +309,8 @@ impl ApiClientApp {
         let response_scroll_handle = ScrollHandle::new();
         let response_scrollbar =
             cx.new(|_| ui::VerticalScrollbar::new(response_scroll_handle.clone()));
+        let response_horizontal_scrollbar =
+            cx.new(|_| ui::HorizontalScrollbar::new(response_scroll_handle.clone()));
         let settings = load_app_settings(&settings_path).unwrap_or_default();
         let theme_mode = Self::theme_mode_from_settings(settings, cx);
         Self {
@@ -344,9 +356,12 @@ impl ApiClientApp {
             response_body_inputs: BTreeMap::new(),
             response_scroll_handle,
             response_scrollbar,
+            response_horizontal_scrollbar,
             expanded_folders,
             formatted_body_cache: None,
             in_flight_requests: BTreeMap::new(),
+            request_started_at: None,
+            _request_timer: None,
         }
     }
 

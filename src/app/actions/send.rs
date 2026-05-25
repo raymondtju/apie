@@ -35,8 +35,27 @@ impl ApiClientApp {
                 .store(true, std::sync::atomic::Ordering::SeqCst);
         }
 
+        // Clear previous response so the UI shows a clean loading state.
+        if let Some(request) = self.active_request_mut() {
+            request.response = None;
+        }
+        self.response_body_inputs.retain(|(id, _), _| *id != request_id);
+
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let cancel_for_task = cancel.clone();
+
+        self.request_started_at = Some(std::time::Instant::now());
+        self._request_timer = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(1))
+                    .await;
+                let result = this.update(cx, |_, cx| cx.notify());
+                if result.is_err() {
+                    break;
+                }
+            }
+        }));
 
         self.status_line = format!("Sending {request_name}…").into();
         cx.notify();
@@ -50,6 +69,8 @@ impl ApiClientApp {
             if cancel_check.load(std::sync::atomic::Ordering::SeqCst) {
                 let _ = this.update(cx, |app, cx| {
                     app.in_flight_requests.remove(&request_id);
+                    app.request_started_at = None;
+                    app._request_timer = None;
                     app.status_line = format!("Cancelled {request_name}.").into();
                     cx.notify();
                 });
@@ -57,6 +78,8 @@ impl ApiClientApp {
             }
             let _ = this.update(cx, |app, cx| {
                 app.in_flight_requests.remove(&request_id);
+                app.request_started_at = None;
+                app._request_timer = None;
                 match result {
                     Ok(response) => {
                         let response = ResponseRecord::from_domain(response);
@@ -294,6 +317,11 @@ impl ApiClientApp {
         self.active_request_mut().unwrap().url = current_url.into();
         self.sync_active_request_inputs(cx);
         self.sync_environment_inputs(cx);
+        // Clear previous response before sending.
+        if let Some(request) = self.active_request_mut() {
+            request.response = None;
+        }
+
         let request = self.active_request().unwrap().clone();
         let environment = &self.workspace.environments[self.workspace.active_environment];
         let request = match request.to_resolved_domain(environment) {
@@ -338,6 +366,8 @@ impl ApiClientApp {
             prior
                 .cancel
                 .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.request_started_at = None;
+            self._request_timer = None;
             self.status_line = "Cancelling request…".into();
             cx.notify();
         }

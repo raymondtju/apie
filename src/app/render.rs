@@ -994,73 +994,78 @@ impl ApiClientApp {
         let current_method = request.method;
         let spacing = Spacing::app();
 
-        div().relative().flex_none().child(
-            ui::select_trigger_with_size(
-                "method-select-trigger",
-                current_method.as_str(),
-                current_method.color(),
-                self.method_menu_open,
-                ui::ButtonSize::Medium,
-                theme,
-                typography,
-            )
-            .debug_selector(|| "method-select-trigger".into())
-            .on_click(cx.listener(Self::toggle_method_menu)),
-        )
-        .when(self.method_menu_open, |this| {
-            let current_method = request.method;
-            let items = Method::all()
-                .iter()
-                .copied()
-                .enumerate()
-                .map(|(index, method)| {
-                    let debug_selector = format!("method-option-{}", method.as_str());
-                    ui::select_menu_item(
-                        ("method-option", index),
-                        method.as_str(),
-                        method.color(),
-                        method == current_method,
-                        theme,
-                        typography,
-                    )
-                    .debug_selector(move || debug_selector.clone())
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, event, window, cx| {
-                            this.set_active_request_method_from_mouse_down(method, event, window, cx)
-                        }),
-                    )
-                    .on_click(cx.listener(move |this, event, window, cx| {
-                        this.set_active_request_method(method, event, window, cx)
-                    }))
-                    .into_any_element()
-                })
-                .collect::<Vec<_>>();
-
-            this.child(
-                deferred(
-                    div()
-                        .absolute()
-                        .top(px(26.0))
-                        .left_0()
-                        .id("method-select-menu")
-                        .debug_selector(|| "method-select-menu".into())
-                        .w(px(112.0))
-                        .p(spacing.base04())
-                        .rounded_sm()
-                        .border_1()
-                        .border_color(theme.panel_focused_border)
-                        .bg(theme.panel_overlay_background)
-                        .shadow_lg()
-                        .flex()
-                        .flex_col()
-                        .gap(spacing.base04())
-                        .on_mouse_move(|_, _, _| {})
-                        .children(items),
+        div()
+            .relative()
+            .flex_none()
+            .child(
+                ui::select_trigger_with_size(
+                    "method-select-trigger",
+                    current_method.as_str(),
+                    current_method.color(),
+                    self.method_menu_open,
+                    ui::ButtonSize::Medium,
+                    theme,
+                    typography,
                 )
-                .with_priority(3),
+                .debug_selector(|| "method-select-trigger".into())
+                .on_click(cx.listener(Self::toggle_method_menu)),
             )
-        })
+            .when(self.method_menu_open, |this| {
+                let current_method = request.method;
+                let items = Method::all()
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(index, method)| {
+                        let debug_selector = format!("method-option-{}", method.as_str());
+                        ui::select_menu_item(
+                            ("method-option", index),
+                            method.as_str(),
+                            method.color(),
+                            method == current_method,
+                            theme,
+                            typography,
+                        )
+                        .debug_selector(move || debug_selector.clone())
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, event, window, cx| {
+                                this.set_active_request_method_from_mouse_down(
+                                    method, event, window, cx,
+                                )
+                            }),
+                        )
+                        .on_click(cx.listener(move |this, event, window, cx| {
+                            this.set_active_request_method(method, event, window, cx)
+                        }))
+                        .into_any_element()
+                    })
+                    .collect::<Vec<_>>();
+
+                this.child(
+                    deferred(
+                        div()
+                            .absolute()
+                            .top(px(26.0))
+                            .left_0()
+                            .id("method-select-menu")
+                            .debug_selector(|| "method-select-menu".into())
+                            .w(px(112.0))
+                            .p(spacing.base04())
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(theme.panel_focused_border)
+                            .bg(theme.panel_overlay_background)
+                            .shadow_lg()
+                            .flex()
+                            .flex_col()
+                            .gap(spacing.base04())
+                            .on_mouse_move(|_, _, _| {})
+                            .children(items),
+                    )
+                    .with_priority(3),
+                )
+            })
     }
 
     fn render_method_menu_overlay(
@@ -1100,73 +1105,76 @@ impl ApiClientApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let spacing = Spacing::app();
-        div().relative().flex_none().child(
-            ui::select_trigger_with_size(
-                "body-view-select-trigger",
-                self.body_view_mode.label(),
-                theme.accent,
-                self.body_view_menu_open,
-                ui::ButtonSize::Default,
-                theme,
-                typography,
-            )
-            .debug_selector(|| "body-view-select-trigger".into())
-            .on_click(cx.listener(Self::toggle_body_view_menu)),
-        )
-        .when(self.body_view_menu_open, |this| {
-            let items = BodyViewMode::all()
-                .iter()
-                .copied()
-                .enumerate()
-                .map(|(index, mode)| {
-                    let debug_selector =
-                        format!("body-view-option-{}", mode.label().to_ascii_lowercase());
-                    ui::select_menu_item(
-                        ("body-view-option", index),
-                        mode.label(),
-                        theme.accent,
-                        mode == self.body_view_mode,
-                        theme,
-                        typography,
-                    )
-                    .debug_selector(move || debug_selector.clone())
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, event, window, cx| {
-                            this.set_body_view_mode_from_mouse_down(mode, event, window, cx)
-                        }),
-                    )
-                    .on_click(cx.listener(move |this, event, window, cx| {
-                        this.set_body_view_mode(mode, event, window, cx)
-                    }))
-                    .into_any_element()
-                })
-                .collect::<Vec<_>>();
-
-            this.child(
-                deferred(
-                    div()
-                        .absolute()
-                        .top(px(26.0))
-                        .left_0()
-                        .id("body-view-select-menu")
-                        .debug_selector(|| "body-view-select-menu".into())
-                        .w(px(112.0))
-                        .p(spacing.base04())
-                        .rounded_sm()
-                        .border_1()
-                        .border_color(theme.panel_focused_border)
-                        .bg(theme.panel_overlay_background)
-                        .shadow_lg()
-                        .flex()
-                        .flex_col()
-                        .gap(spacing.base04())
-                        .on_mouse_move(|_, _, _| {})
-                        .children(items),
+        div()
+            .relative()
+            .flex_none()
+            .child(
+                ui::select_trigger_with_size(
+                    "body-view-select-trigger",
+                    self.body_view_mode.label(),
+                    theme.accent,
+                    self.body_view_menu_open,
+                    ui::ButtonSize::Default,
+                    theme,
+                    typography,
                 )
-                .with_priority(3),
+                .debug_selector(|| "body-view-select-trigger".into())
+                .on_click(cx.listener(Self::toggle_body_view_menu)),
             )
-        })
+            .when(self.body_view_menu_open, |this| {
+                let items = BodyViewMode::all()
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(index, mode)| {
+                        let debug_selector =
+                            format!("body-view-option-{}", mode.label().to_ascii_lowercase());
+                        ui::select_menu_item(
+                            ("body-view-option", index),
+                            mode.label(),
+                            theme.accent,
+                            mode == self.body_view_mode,
+                            theme,
+                            typography,
+                        )
+                        .debug_selector(move || debug_selector.clone())
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, event, window, cx| {
+                                this.set_body_view_mode_from_mouse_down(mode, event, window, cx)
+                            }),
+                        )
+                        .on_click(cx.listener(move |this, event, window, cx| {
+                            this.set_body_view_mode(mode, event, window, cx)
+                        }))
+                        .into_any_element()
+                    })
+                    .collect::<Vec<_>>();
+
+                this.child(
+                    deferred(
+                        div()
+                            .absolute()
+                            .top(px(26.0))
+                            .left_0()
+                            .id("body-view-select-menu")
+                            .debug_selector(|| "body-view-select-menu".into())
+                            .w(px(112.0))
+                            .p(spacing.base04())
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(theme.panel_focused_border)
+                            .bg(theme.panel_overlay_background)
+                            .shadow_lg()
+                            .flex()
+                            .flex_col()
+                            .gap(spacing.base04())
+                            .on_mouse_move(|_, _, _| {})
+                            .children(items),
+                    )
+                    .with_priority(3),
+                )
+            })
     }
 
     fn render_body_view_menu_overlay(
@@ -1346,33 +1354,39 @@ impl ApiClientApp {
                     .gap(spacing.component_gap())
                     .child(self.render_method_select(&request, theme, typography, cx))
                     .child(self.render_url_input_field(theme, typography, window, cx))
-                    .child(if self.is_active_request_in_flight() {
-                        Self::render_toolbar_button(
-                            "Cancel",
-                            true,
-                            ButtonStyle::Tinted(ui::TintColor::Error),
-                            theme,
-                            Self::cancel_active_request,
-                            cx,
-                        )
-                        .into_any_element()
-                    } else {
-                        Self::render_toolbar_button(
-                            "Send",
-                            true,
-                            ButtonStyle::Filled,
-                            theme,
-                            Self::send_request,
-                            cx,
-                        )
-                        .into_any_element()
+                    .child({
+                        let in_flight = self.is_active_request_in_flight();
+                        if in_flight {
+                            let id = "Send".bytes().fold(0usize, |hash, byte| {
+                                hash.wrapping_mul(31).wrapping_add(byte as usize)
+                            });
+                            ui::button_base_with_size(
+                                ("toolbar-button", id),
+                                "Send",
+                                false,
+                                ButtonStyle::Subtle,
+                                ui::ButtonSize::Medium,
+                                theme,
+                            )
+                            .into_any_element()
+                        } else {
+                            Self::render_toolbar_button(
+                                "Send",
+                                true,
+                                ButtonStyle::Filled,
+                                theme,
+                                Self::send_request,
+                                cx,
+                            )
+                            .into_any_element()
+                        }
                     }),
             )
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(spacing.cluster_gap())
+                    .gap(spacing.component_gap())
                     .px(spacing.base12())
                     .py(spacing.base04())
                     .border_b_1()
@@ -1567,6 +1581,8 @@ impl ApiClientApp {
                     input.set_placeholder("Raw JSON, text, or {{variable}}");
                     input.set_placeholder_color(theme.text_placeholder);
                     input.set_syntax_colors(Self::syntax_colors_for_theme(theme));
+                    input.set_background_color(theme.editor_background);
+                    input.set_gutter_border_color(theme.border);
                 });
                 let body_focus_input = body_input.clone();
                 ui::flat_section(theme)
@@ -1635,6 +1651,7 @@ impl ApiClientApp {
                                             .flex()
                                             .flex_col()
                                             .h_full()
+                                            .items_start()
                                             .overflow_scroll()
                                             .p(spacing.base08())
                                             .child(body_input),
@@ -1922,6 +1939,9 @@ impl ApiClientApp {
                     theme,
                     cx,
                 ),
+                (_, None) if self.is_active_request_in_flight() => {
+                    self.render_response_loading(theme, cx)
+                }
                 (_, None) => div()
                     .flex_1()
                     .min_h_0()
@@ -1930,6 +1950,49 @@ impl ApiClientApp {
                     .child("Send the request to populate status, headers, body, timing, and size.")
                     .into_any_element(),
             })
+    }
+
+    fn render_response_loading(
+        &self,
+        theme: AppTheme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let typography = self.typography();
+        let spacing = Spacing::app();
+        let elapsed = self
+            .request_started_at
+            .map(|start| start.elapsed().as_secs_f32())
+            .unwrap_or(0.0);
+        let label = if elapsed < 1.0 {
+            "Sending request…".into()
+        } else {
+            format!("Sending request… ({elapsed:.1}s)")
+        };
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(spacing.component_gap())
+            .p(spacing.base12())
+            .bg(theme.surface_background)
+            .child(
+                div()
+                    .text_color(theme.text_muted)
+                    .text_ui(typography)
+                    .child(label),
+            )
+            .child(Self::render_button(
+                "Cancel",
+                true,
+                ButtonStyle::Tinted(ui::TintColor::Error),
+                theme,
+                Self::cancel_active_request,
+                cx,
+            ))
+            .into_any_element()
     }
 
     fn response_tab_button(
@@ -1968,7 +2031,6 @@ impl ApiClientApp {
             request_id,
             mode,
             body_ptr: response.body.as_ref().as_ptr(),
-            body_len: response.body.len(),
             formatted: formatted.clone(),
         });
         formatted
@@ -2028,29 +2090,96 @@ impl ApiClientApp {
         let typography = self.typography();
         let spacing = Spacing::app();
 
-        if response.body.len() > MAX_INLINE_RESPONSE_BODY_BYTES {
-            return self.render_oversize_response_placeholder(response, theme, cx);
+        let is_large = response.body.len() > super::LARGE_RESPONSE_WARNING_BYTES;
+
+        // Binary content (e.g. octet-stream) contains U+FFFD replacement chars
+        // that can crash cosmic-text's bidi parser. Show a placeholder instead.
+        if looks_like_binary(&response.body) {
+            return self.render_binary_response_placeholder(response, theme, cx);
         }
 
+        // For very large bodies we still render via CodeInput.
+        // If the user has Pretty selected but the body is large, the formatting
+        // guard will have returned raw content. We pass the user's mode anyway
+        // (the cache key uses it), but content will be raw.
         let body = self.formatted_body_for(request_id, response);
+        let effective_mode = if is_large && self.body_view_mode == BodyViewMode::Pretty {
+            BodyViewMode::Raw // display as Raw even if selector says Pretty
+        } else {
+            self.body_view_mode
+        };
+
         let response_code_input =
-            self.response_body_input(request_id, self.body_view_mode, body.clone(), cx);
+            self.response_body_input(request_id, effective_mode, body.clone(), cx);
+        let scroll_handle = self.response_scroll_handle.clone();
+
         response_code_input.update(cx, |input, _cx| {
             input.set_placeholder_color(theme.text_placeholder);
             input.set_syntax_colors(Self::syntax_colors_for_theme(theme));
+            input.set_background_color(theme.editor_background);
+            input.set_gutter_border_color(theme.border);
         });
-        let scroll_handle = self.response_scroll_handle.clone();
         self.response_scrollbar.update(cx, |scrollbar, _cx| {
             scrollbar.set_colors(theme.border_variant, theme.text_muted);
             scrollbar.set_code_input(response_code_input.downgrade());
         });
         let scrollbar = ui::vertical_scrollbar(&self.response_scrollbar);
-        div()
+
+        let response_content_width = response_code_input.read(cx).last_content_width();
+
+        self.response_horizontal_scrollbar
+            .update(cx, |scrollbar, _cx| {
+                scrollbar.set_colors(theme.border_variant, theme.text_muted);
+                scrollbar.set_code_input(response_code_input.downgrade());
+                // Push the CodeInput's measured (or estimated) content width so the
+                // horizontal bar can show a thumb even on the first frame.
+                scrollbar.set_content_width(response_content_width);
+            });
+        let horizontal_scrollbar = ui::horizontal_scrollbar(&self.response_horizontal_scrollbar);
+
+        let mut body_area = div()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
-            .bg(theme.surface_background)
+            .bg(theme.surface_background);
+
+        if is_large {
+            let size_label = format_byte_count(response.body.len());
+            let body_for_save = response.body.clone();
+            let suggested_name = suggest_response_filename(response);
+
+            body_area = body_area.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px(spacing.base08())
+                    .py(spacing.base04())
+                    .bg(theme.element_background)
+                    .text_color(theme.text_muted)
+                    .text_ui_sm(typography)
+                    .child(SharedString::from(format!(
+                        "Large response ({size_label}). Pretty mode may be slow."
+                    )))
+                    .child(Self::render_button(
+                        "Save to file",
+                        false,
+                        ButtonStyle::Transparent,
+                        theme,
+                        move |this, _event, _window, cx| {
+                            this.save_response_body_to_file(
+                                body_for_save.clone(),
+                                suggested_name.clone(),
+                                cx,
+                            );
+                        },
+                        cx,
+                    )),
+            );
+        }
+
+        body_area
             .child(
                 div()
                     .relative()
@@ -2063,6 +2192,7 @@ impl ApiClientApp {
                             .flex()
                             .flex_col()
                             .h_full()
+                            .items_start() // allow the CodeInput to be wider than the container (for horizontal scroll)
                             .overflow_scroll()
                             .track_scroll(&scroll_handle)
                             .p(spacing.base08())
@@ -2071,12 +2201,13 @@ impl ApiClientApp {
                             .text_color(theme.editor_text)
                             .child(response_code_input),
                     )
-                    .child(scrollbar),
+                    .child(scrollbar)
+                    .child(horizontal_scrollbar),
             )
             .into_any_element()
     }
 
-    fn render_oversize_response_placeholder(
+    fn render_binary_response_placeholder(
         &self,
         response: &ResponseRecord,
         theme: AppTheme,
@@ -2084,11 +2215,10 @@ impl ApiClientApp {
     ) -> AnyElement {
         let typography = self.typography();
         let spacing = Spacing::app();
-        let size_label = format_byte_count(response.body.len());
         let body = response.body.clone();
         let suggested_name = suggest_response_filename(response);
         div()
-            .debug_selector(|| "response-body-oversize-placeholder".into())
+            .debug_selector(|| "response-body-binary-placeholder".into())
             .flex()
             .flex_col()
             .items_center()
@@ -2102,16 +2232,8 @@ impl ApiClientApp {
                 div()
                     .text_color(theme.text)
                     .text_ui(typography)
-                    .child(SharedString::from(format!(
-                        "Body too large to render inline ({size_label})."
-                    ))),
-            )
-            .child(
-                div()
-                    .text_color(theme.text_muted)
-                    .text_ui_sm(typography)
                     .child(SharedString::from(
-                        "Save the body to a file to inspect it with another tool.",
+                        "Binary response body — not displayed inline.",
                     )),
             )
             .child(Self::render_button(
@@ -2120,7 +2242,11 @@ impl ApiClientApp {
                 ButtonStyle::Filled,
                 theme,
                 move |this, _event, _window, cx| {
-                    this.save_response_body_to_file(body.clone(), suggested_name.clone(), cx);
+                    this.save_response_body_to_file(
+                        body.clone(),
+                        suggested_name.clone(),
+                        cx,
+                    );
                 },
                 cx,
             ))
@@ -2228,9 +2354,17 @@ impl ApiClientApp {
                     .px(spacing.base12())
                     .py(spacing.base08())
                     .text_color(theme.text_muted)
-                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, event, window, cx| {
-                        this.copy_response_header_value_on_mouse_down(value_for_text.clone(), event, window, cx)
-                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event, window, cx| {
+                            this.copy_response_header_value_on_mouse_down(
+                                value_for_text.clone(),
+                                event,
+                                window,
+                                cx,
+                            )
+                        }),
+                    )
                     .child(header.value.clone()),
             )
             .child(
@@ -2248,7 +2382,12 @@ impl ApiClientApp {
                         .debug_selector(move || copy_selector.clone())
                         .on_click(cx.listener(
                             move |this, event, window, cx| {
-                                this.copy_response_header_value(value_for_icon.clone(), event, window, cx)
+                                this.copy_response_header_value(
+                                    value_for_icon.clone(),
+                                    event,
+                                    window,
+                                    cx,
+                                )
                             },
                         )),
                     ),

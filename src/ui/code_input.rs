@@ -8,8 +8,8 @@ use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
     Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, InteractiveElement,
     KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
-    Pixels, Point, ShapedLine, SharedString, Style, Task, TextRun, UTF16Selection, Window, actions,
-    div, fill, point, prelude::*, px, relative, rgb, rgba, size,
+    Pixels, Point, ShapedLine, SharedString, Style, Task, TextRun, UTF16Selection,
+    Window, actions, div, fill, point, prelude::*, px, rgb, rgba, size,
 };
 use unicode_segmentation::GraphemeCursor;
 
@@ -97,6 +97,12 @@ pub(crate) struct CodeInput {
     shape_cache_clock: u64,
     /// Cache of shaped gutter line numbers keyed by source row.
     gutter_cache: HashMap<(usize, GutterMarker), ShapedLine>,
+    /// Last computed max content width (gutter + widest line) from the previous
+    /// frame's prepaint. Used in request_layout to declare a scrollable width
+    /// for horizontal overflow in the ancestor `overflow_scroll` container.
+    last_content_width: Pixels,
+    pub(crate) background_color: gpui::Hsla,
+    pub(crate) gutter_border_color: Option<gpui::Hsla>,
 }
 
 #[derive(Clone)]
@@ -197,6 +203,9 @@ struct CachedCodeLayout {
     total_line_count: usize,
     line_height: Pixels,
     text_left: Pixels,
+    /// Maximum advance width of the visible content (gutter + widest shaped line).
+    /// Used to drive horizontal scroll range in the parent overflow container.
+    content_width: Pixels,
 }
 
 #[cfg(test)]
@@ -411,6 +420,9 @@ impl CodeInput {
             shape_cache: HashMap::new(),
             shape_cache_clock: 0,
             gutter_cache: HashMap::new(),
+            last_content_width: px(0.),
+            background_color: rgba(0x00000000).into(),
+            gutter_border_color: None,
         }
     }
 
@@ -441,6 +453,12 @@ impl CodeInput {
         self.content.to_string()
     }
 
+    /// Returns the last computed content width (for use by the horizontal
+    /// scrollbar to decide whether to show a thumb).
+    pub(crate) fn last_content_width(&self) -> Pixels {
+        self.last_content_width
+    }
+
     /// Cheap identity comparison against a `SharedString` without
     /// cloning the underlying buffer. Same `Arc` storage hits the fast
     /// path. Falls back to byte comparison when the storage differs.
@@ -461,6 +479,18 @@ impl CodeInput {
         if self.placeholder_color != color {
             self.placeholder_color = color;
             self.gutter_cache.clear();
+        }
+    }
+
+    pub(crate) fn set_background_color(&mut self, color: gpui::Hsla) {
+        if self.background_color != color {
+            self.background_color = color;
+        }
+    }
+
+    pub(crate) fn set_gutter_border_color(&mut self, color: gpui::Hsla) {
+        if self.gutter_border_color != Some(color) {
+            self.gutter_border_color = Some(color);
         }
     }
 
@@ -1192,6 +1222,10 @@ impl CodeInput {
             .skip(relative_line_index)
         {
             if position.y <= line_origin_y + layout.line_height {
+                // The parent overflow_scroll container already translates our
+                // bounds by its scroll offset (via `with_element_offset`), so
+                // `layout.text_left` is already in scroll-corrected coords.
+                // No manual subtraction needed here.
                 return (line_start + line.closest_index_for_x(position.x - layout.text_left))
                     .min(line_end);
             }
@@ -1235,6 +1269,9 @@ impl CodeInput {
                 let end_x = line
                     .x_for_index(local_end.min(line.len()))
                     .max(start_x + px(2.0));
+                // The parent overflow_scroll container already translates our
+                // bounds by its scroll offset, so `text_left` is already in
+                // scroll-corrected window coords.
                 quads.push(fill(
                     Bounds::from_corners(
                         point(text_left + start_x, line_origin_y),
@@ -1677,6 +1714,9 @@ fn position_for_index_in_layout(
     {
         if index >= line_start && index <= line_end {
             let local_index = index.saturating_sub(line_start);
+            // The parent overflow_scroll container already translates our
+            // bounds by its scroll offset, so `layout.text_left` is already in
+            // scroll-corrected window coords.
             return Some(point(
                 layout.text_left + line.x_for_index(local_index.min(line.len())),
                 line_origin_y,
@@ -1907,8 +1947,42 @@ impl Element for CodeElement {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let line_count = self.input.update(cx, |input, _| input.visible_line_count());
+        let last_content_width = self.input.update(cx, |input, _| input.last_content_width);
+
         let mut style = Style::default();
-        style.size.width = relative(1.).into();
+
+        // Prefer the accurately measured width from the previous frame's shaping.
+        // If we don't have one yet (first render of a document), compute a cheap
+        // estimate from the raw text so the scroll container immediately sees
+        // horizontal range for wide content. This solves the "horizontal scroll
+        // not available on first load" problem.
+        let desired_width = if last_content_width > px(0.) {
+            last_content_width
+        } else {
+            self.input.update(cx, |input, _| {
+                let longest = input
+                    .content
+                    .lines()
+                    .map(|l| l.chars().count())
+                    .max()
+                    .unwrap_or(0);
+
+                // Conservative first-frame estimate (only used until the first real
+                // shaping pass stores an accurate `content_width`).
+                // ~7.5px per char is reasonable for typical monospace at default sizes.
+                // Use a more generous estimate (9px per char + gutter) so that
+                // even moderately wide JSON triggers horizontal scroll range on the
+                // very first frame. The real shaped value will refine it immediately.
+                // Cap at 20k px to avoid cosmic-text assertion failures on multi-MB
+                // single-line responses (e.g. httpbin.org/bytes/1500000).
+                let estimated_text = px((longest as f32 * 9.0).min(20_000.0));
+
+                let approx_gutter = gutter_width(input.source_line_count().max(1));
+                estimated_text + approx_gutter + px(24.)
+            })
+        };
+
+        style.size.width = desired_width.into();
         style.size.height = (window.line_height() * line_count as f32).into();
         (window.request_layout(style, [], cx), ())
     }
@@ -1941,8 +2015,15 @@ impl Element for CodeElement {
                     input.drag_in_progress(),
                 )
             });
-        let gutter_width = gutter_width(max_line_number);
-        let text_left = bounds.left() + gutter_width;
+        let gutter_width_px = gutter_width(max_line_number);
+        let text_left = bounds.left() + gutter_width_px;
+
+        // Note: GPUI's parent `overflow_scroll` container automatically
+        // translates our `bounds.origin` by its scroll offset (via
+        // `with_element_offset` during prepaint), so `text_left` above is
+        // already in scroll-corrected window coords. The sticky gutter
+        // re-anchors itself to `visible_bounds.left()` during paint.
+
         let render_range = visible_line_range(
             bounds,
             window.content_mask().bounds,
@@ -2201,6 +2282,25 @@ impl Element for CodeElement {
             });
         }
 
+        // Compute horizontal content width from the just-shaped visible lines.
+        // This (plus gutter) determines the horizontal scroll range reported to
+        // the parent overflow_scroll container. We use only the currently visible
+        // (plus overscan) lines for cost reasons — sufficient for the vast majority
+        // of real-world JSON, including deeply nested or minified cases.
+        //
+        // Note: We call the gutter_width *function* here (before/after the local
+        // `let gutter_width = ...` binding in this scope) and access the public
+        // `.width` field on ShapedLine (not a method).
+        //
+        // Cap at 20k px to avoid cosmic-text assertion failures on multi-MB
+        // single-line responses (e.g. httpbin.org/bytes/1500000).
+        let gutter_width_px_for_content = gutter_width(max_line_number);
+        let max_text_advance = lines
+            .iter()
+            .map(|line| line.width)
+            .fold(px(0.0), |acc, w| acc.max(w));
+        let content_width = (gutter_width_px_for_content + max_text_advance).min(px(20_000.0));
+
         let layout = CachedCodeLayout {
             lines,
             gutter_lines,
@@ -2212,6 +2312,7 @@ impl Element for CodeElement {
             total_line_count,
             line_height,
             text_left,
+            content_width,
         };
         let input = self.input.read(cx);
         let selection = if use_placeholder {
@@ -2238,6 +2339,8 @@ impl Element for CodeElement {
                 },
             )
         } else if !input.read_only && use_placeholder && input.cursor_visible {
+            // Bounds are already scroll-shifted by the parent overflow_scroll
+            // container; paint the placeholder caret in the same coord space.
             Some(fill(
                 Bounds::new(point(text_left, bounds.top()), size(px(2.0), line_height)),
                 input.cursor_color,
@@ -2246,11 +2349,15 @@ impl Element for CodeElement {
             None
         };
 
-        // Store layout for position_for_index
+        // Store layout for position_for_index + hit testing, and the computed
+        // content width so the *next* request_layout can declare a proper
+        // horizontal scrollable size.
         let stored_layout = layout.clone();
+        let new_content_width = layout.content_width;
         self.input.update(cx, move |input, _cx| {
             input.last_layout = Some(stored_layout);
             input.last_bounds = Some(bounds);
+            input.last_content_width = new_content_width;
         });
 
         CodePrepaintState {
@@ -2270,9 +2377,15 @@ impl Element for CodeElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let input = self.input.read(cx);
-        let focus_handle = input.focus_handle.clone();
-        let _ = input;
+        let (focus_handle, background_color, gutter_border_color) = {
+            let input = self.input.read(cx);
+            (
+                input.focus_handle.clone(),
+                input.background_color,
+                input.gutter_border_color,
+            )
+        };
+        
         window.handle_input(
             &focus_handle,
             ElementInputHandler::new(bounds, self.input.clone()),
@@ -2281,21 +2394,13 @@ impl Element for CodeElement {
         for selection in prepaint.selection.drain(..) {
             window.paint_quad(selection);
         }
+        
+        // 1. Paint text lines. The parent overflow_scroll container has
+        // already translated our `bounds` by its scroll offset, so painting
+        // at `text_left` directly draws in scroll-shifted window coords.
         let mut line_origin = bounds.origin;
         line_origin.y += prepaint.layout.line_height * prepaint.layout.first_line_index as f32;
-        for (line, gutter_line) in prepaint
-            .layout
-            .lines
-            .iter()
-            .zip(prepaint.layout.gutter_lines.iter())
-        {
-            let gutter_origin = point(
-                prepaint.layout.text_left - px(8.0) - gutter_line.width,
-                line_origin.y,
-            );
-            gutter_line
-                .paint(gutter_origin, prepaint.layout.line_height, window, cx)
-                .unwrap();
+        for line in &prepaint.layout.lines {
             line.paint(
                 point(prepaint.layout.text_left, line_origin.y),
                 prepaint.layout.line_height,
@@ -2305,12 +2410,55 @@ impl Element for CodeElement {
             .unwrap();
             line_origin.y += prepaint.layout.line_height;
         }
+
+        // 2. Paint solid gutter background and border line
+        let gutter_width_px = prepaint.layout.text_left - bounds.left();
+        let visible_bounds = window.content_mask().bounds;
+
+        if visible_bounds.left() < bounds.right() && gutter_width_px > px(0.0) {
+            let gutter_rect = Bounds::new(
+                point(visible_bounds.left(), bounds.top()),
+                size(gutter_width_px, bounds.size.height),
+            );
+            window.paint_quad(fill(gutter_rect, background_color));
+
+            // Paint subtle vertical border on the right of the gutter
+            if let Some(border_color) = gutter_border_color {
+                let border_rect = Bounds::new(
+                    point(visible_bounds.left() + gutter_width_px - px(1.0), bounds.top()),
+                    size(px(1.0), bounds.size.height),
+                );
+                window.paint_quad(fill(border_rect, border_color));
+            }
+        }
+
+        // 3. Paint gutter line numbers (sticky to the viewport left).
+        // `bounds.left()` is in scroll-shifted window coords; pinning the
+        // gutter to `visible_bounds.left()` keeps it in place even when
+        // the parent scroll container has translated everything else.
+        let mut line_origin = bounds.origin;
+        line_origin.y += prepaint.layout.line_height * prepaint.layout.first_line_index as f32;
+        let sticky_text_left = visible_bounds.left() + gutter_width_px;
+        for gutter_line in &prepaint.layout.gutter_lines {
+            let gutter_origin = point(
+                sticky_text_left - px(8.0) - gutter_line.width,
+                line_origin.y,
+            );
+
+            // Only paint the gutter line number if it's within the viewport bounds
+            if gutter_origin.x >= visible_bounds.left() && gutter_origin.x < visible_bounds.right() {
+                gutter_line
+                    .paint(gutter_origin, prepaint.layout.line_height, window, cx)
+                    .unwrap();
+            }
+            line_origin.y += prepaint.layout.line_height;
+        }
+
         if focus_handle.is_focused(window)
             && let Some(cursor) = prepaint.cursor.take()
         {
             window.paint_quad(cursor);
         }
-        // last_layout is stored in prepaint — no need to clone again here.
     }
 }
 
@@ -2355,7 +2503,12 @@ impl Render for CodeInput {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .w_full()
+            // `min_w_full` (not `w_full`) lets the wrapper grow with the
+            // CodeElement's intrinsic width when content is wider than the
+            // viewport, which is what an ancestor `overflow_scroll` needs to
+            // detect horizontal overflow and enable wheel/bar scrolling.
+            // Narrow content still fills the viewport via the 100% min-width.
+            .min_w_full()
             .child(CodeElement { input: cx.entity() })
     }
 }

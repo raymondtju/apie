@@ -136,11 +136,25 @@ pub(crate) fn base64_encode(input: &[u8]) -> String {
 pub(crate) fn response_body_for_mode(body: &str, mode: BodyViewMode) -> SharedString {
     match mode {
         BodyViewMode::Raw => body.to_string().into(),
-        BodyViewMode::Pretty => serde_json::from_str::<serde_json::Value>(body)
-            .and_then(|value| serde_json::to_string_pretty(&value))
-            .unwrap_or_else(|_| body.to_string())
-            .into(),
+        BodyViewMode::Pretty => {
+            if body.len() > super::PRETTY_PRINT_GUARD_BYTES {
+                // Avoid expensive parse + pretty-print for very large bodies.
+                // Caller (render layer) is responsible for showing a warning.
+                return body.to_string().into();
+            }
+            serde_json::from_str::<serde_json::Value>(body)
+                .and_then(|value| serde_json::to_string_pretty(&value))
+                .unwrap_or_else(|_| body.to_string())
+                .into()
+        }
     }
+}
+
+/// Check if a response body looks like binary data. Returns `true` if the
+/// body contains the Unicode replacement character (U+FFFD), which means
+/// the original bytes were not valid UTF-8 and are likely binary.
+pub(crate) fn looks_like_binary(body: &str) -> bool {
+    body.contains('\u{FFFD}')
 }
 
 pub(crate) fn format_byte_count(bytes: usize) -> String {

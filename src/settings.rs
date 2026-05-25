@@ -43,12 +43,14 @@ impl ThemePreference {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppSettings {
     pub ui_font_size: f32,
     pub buffer_font_size: f32,
     #[serde(default)]
     pub theme_preference: ThemePreference,
+    #[serde(default)]
+    pub active_workspace: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -57,6 +59,7 @@ impl Default for AppSettings {
             ui_font_size: DEFAULT_UI_FONT_SIZE,
             buffer_font_size: DEFAULT_BUFFER_FONT_SIZE,
             theme_preference: ThemePreference::System,
+            active_workspace: None,
         }
     }
 }
@@ -143,7 +146,7 @@ pub fn save_app_settings(path: impl AsRef<Path>, settings: &AppSettings) -> Sett
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let json = serde_json::to_string_pretty(&settings.clamped())?;
+    let json = serde_json::to_string_pretty(&settings.clone().clamped())?;
     fs::write(path, json)?;
     Ok(())
 }
@@ -168,6 +171,7 @@ mod tests {
             ui_font_size: 16.0,
             buffer_font_size: 18.0,
             theme_preference: ThemePreference::ZedDark,
+            active_workspace: None,
         };
 
         save_app_settings(&path, &settings).unwrap();
@@ -196,6 +200,7 @@ mod tests {
                 ui_font_size: MIN_UI_FONT_SIZE,
                 buffer_font_size: MAX_BUFFER_FONT_SIZE,
                 theme_preference: ThemePreference::System,
+                active_workspace: None,
             }
         );
 

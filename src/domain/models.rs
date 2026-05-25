@@ -160,6 +160,13 @@ pub enum CollectionItem {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Collection {
+    pub id: String,
+    pub name: String,
+    pub items: Vec<CollectionItem>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Environment {
     pub name: String,
     pub variables: Vec<Header>,
@@ -171,9 +178,11 @@ pub struct Workspace {
     pub name: String,
     pub active_environment: String,
     pub environments: Vec<Environment>,
-    pub items: Vec<CollectionItem>,
+    pub items: Vec<Collection>,
     #[serde(default)]
     pub expanded_folders: Vec<String>,
+    #[serde(default)]
+    pub expanded_collections: Vec<String>,
 }
 impl Request {
     pub fn new(

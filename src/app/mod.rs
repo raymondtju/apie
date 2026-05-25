@@ -20,13 +20,13 @@ pub(crate) use gpui::{
     prelude::*, px, rgb,
 };
 
-pub(crate) mod state;
 pub(crate) mod actions;
 pub(crate) mod render;
-pub(crate) mod types;
 pub(crate) mod resolve;
-pub(crate) use types::*;
+pub(crate) mod state;
+pub(crate) mod types;
 pub(crate) use resolve::*;
+pub(crate) use types::*;
 
 /// Response bodies above this size trigger a warning banner in the UI.
 /// We still attempt to render them (Raw by default), but warn the user
@@ -61,7 +61,8 @@ impl FormattedBodyCache {
 }
 
 actions!(
-    api_client, [
+    api_client,
+    [
         SendFocusedRequest,
         OpenSettings,
         SubmitDialog,
@@ -155,6 +156,27 @@ pub(crate) struct FolderDeleteDialog {
     folder_name: SharedString,
 }
 
+pub(crate) struct CollectionRenameDialog {
+    pub(crate) collection_id: usize,
+    pub(crate) input: Entity<TextInput>,
+}
+
+#[derive(Clone)]
+pub(crate) struct CollectionDeleteDialog {
+    pub(crate) collection_id: usize,
+    pub(crate) collection_name: SharedString,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct CollectionContextMenu {
+    pub(crate) collection_id: usize,
+    pub(crate) position: Point<Pixels>,
+}
+
+pub(crate) struct WorkspaceCreateDialog {
+    pub(crate) input: Entity<TextInput>,
+}
+
 #[derive(Clone)]
 pub(crate) struct DraggedRequestTab {
     request_id: usize,
@@ -228,6 +250,43 @@ impl Render for DraggedCollectionItem {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct DraggedCollection {
+    pub(crate) collection_id: usize,
+    pub(crate) label: SharedString,
+    pub(crate) theme: AppTheme,
+    pub(crate) typography: Typography,
+}
+
+impl Render for DraggedCollection {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let spacing = Spacing::app();
+        ui::list_item("dragged-collection-preview", false, self.theme)
+            .shadow_lg()
+            .bg(self.theme.panel_overlay_background)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(spacing.cluster_gap())
+                    .child(
+                        div()
+                            .w(px(42.0))
+                            .text_ui_xs(self.typography)
+                            .text_color(self.theme.text_muted)
+                            .child("COLL"),
+                    )
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(self.theme.text)
+                            .truncate()
+                            .child(self.label.clone()),
+                    ),
+            )
+    }
+}
+
 pub(crate) struct ApiClientApp {
     workspace: Workspace,
     focus_handle: FocusHandle,
@@ -237,6 +296,7 @@ pub(crate) struct ApiClientApp {
     selected_collection_item: Option<CollectionSelection>,
     open_tabs: Vec<usize>,
     expanded_folders: HashSet<usize>,
+    expanded_collections: HashSet<usize>,
     active_panel: Panel,
     active_response_panel: ResponsePanel,
     body_view_mode: BodyViewMode,
@@ -258,10 +318,16 @@ pub(crate) struct ApiClientApp {
     response_meta_popover: bool,
     request_context_menu: Option<RequestContextMenu>,
     folder_context_menu: Option<FolderContextMenu>,
+    collection_context_menu: Option<CollectionContextMenu>,
     rename_request_dialog: Option<RequestRenameDialog>,
     rename_folder_dialog: Option<FolderRenameDialog>,
+    rename_collection_dialog: Option<CollectionRenameDialog>,
     delete_request_dialog: Option<RequestDeleteDialog>,
     delete_folder_dialog: Option<FolderDeleteDialog>,
+    delete_collection_dialog: Option<CollectionDeleteDialog>,
+    create_workspace_dialog: Option<WorkspaceCreateDialog>,
+    workspace_menu_open: bool,
+    workspaces_list: Vec<(String, PathBuf)>,
     status_line: SharedString,
     next_item_id: usize,
     suppress_tab_click_selection: bool,
@@ -288,10 +354,17 @@ impl ApiClientApp {
     }
 
     pub(crate) fn new_with_settings_path(cx: &mut Context<Self>, settings_path: PathBuf) -> Self {
-        let workspace_path = settings_path
-            .parent()
-            .map(|parent| parent.join("workspaces/local.json"))
-            .unwrap_or_else(|| PathBuf::from("workspaces/local.json"));
+        let settings = load_app_settings(&settings_path).unwrap_or_default();
+        let workspace_path = settings
+            .active_workspace
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                settings_path
+                    .parent()
+                    .map(|parent| parent.join("workspaces/local.json"))
+                    .unwrap_or_else(|| PathBuf::from("workspaces/local.json"))
+            });
         let mut workspace = domain::load_workspace(&workspace_path)
             .map(|workspace| {
                 Workspace::from_domain(
@@ -304,6 +377,7 @@ impl ApiClientApp {
         let first_request_id = workspace.first_request_id();
         let open_tabs = first_request_id.into_iter().collect::<Vec<_>>();
         let expanded_folders = workspace.expanded_folder_ids();
+        let expanded_collections = workspace.expanded_collection_ids();
         let initial_url = first_request_id
             .and_then(|id| {
                 workspace
@@ -319,20 +393,23 @@ impl ApiClientApp {
         let response_horizontal_scrollbar =
             cx.new(|_| ui::HorizontalScrollbar::new(response_scroll_handle.clone()));
         let settings = load_app_settings(&settings_path).unwrap_or_default();
-        let theme_mode = Self::theme_mode_from_settings(settings, cx);
-        Self {
+        let theme_mode = Self::theme_mode_from_settings(settings.clone(), cx);
+        let mut app = Self {
             workspace,
             focus_handle: cx.focus_handle(),
             url_input,
             field_inputs: BTreeMap::new(),
             active_request_id: first_request_id,
-            selected_collection_item: first_request_id.map(CollectionSelection::Request),
+            selected_collection_item: first_request_id.map(|id| CollectionSelection::Request {
+                collection_id: 1,
+                item_id: id,
+            }),
             open_tabs,
             active_panel: Panel::Body,
             active_response_panel: ResponsePanel::Body,
             body_view_mode: BodyViewMode::Pretty,
             theme_mode,
-            settings,
+            settings: settings.clone(),
             draft_settings: settings,
             settings_path,
             workspace_path,
@@ -349,31 +426,35 @@ impl ApiClientApp {
             response_meta_popover: false,
             request_context_menu: None,
             folder_context_menu: None,
+            collection_context_menu: None,
             rename_request_dialog: None,
             rename_folder_dialog: None,
+            rename_collection_dialog: None,
             delete_request_dialog: None,
             delete_folder_dialog: None,
-            status_line: if first_request_id.is_some() {
-                "Ready.".into()
-            } else {
-                "Ready. Create a request to begin.".into()
-            },
-            next_item_id,
+            delete_collection_dialog: None,
+            create_workspace_dialog: None,
+            workspace_menu_open: false,
+            workspaces_list: Vec::new(),
+            status_line: "Welcome to the API Client".into(),
+            next_item_id: next_item_id,
             suppress_tab_click_selection: false,
             suppress_collection_click: false,
             body_inputs: BTreeMap::new(),
             response_body_inputs: BTreeMap::new(),
-            response_scroll_handle,
             response_scrollbar,
             response_horizontal_scrollbar,
-            expanded_folders,
+            response_scroll_handle,
             formatted_body_cache: None,
             in_flight_requests: BTreeMap::new(),
-            request_started_at: None,
             _request_timer: None,
-        }
+            expanded_folders,
+            expanded_collections,
+            request_started_at: None,
+        };
+        app.refresh_workspaces_list();
+        app
     }
-
 }
 
 #[cfg(test)]

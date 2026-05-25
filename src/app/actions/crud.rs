@@ -30,7 +30,25 @@ impl ApiClientApp {
             self.open_tabs.push(request_id);
         }
         self.active_request_id = Some(request_id);
-        self.selected_collection_item = Some(CollectionSelection::Request(request_id));
+        let Some(collection_id) = self
+            .workspace
+            .collections
+            .iter()
+            .find(|c| find_request(&c.items, request_id).is_some())
+            .map(|c| c.id)
+        else {
+            self.selected_collection_item = Some(CollectionSelection::Request {
+                collection_id: 1,
+                item_id: request_id,
+            });
+            self.expanded_collections.insert(1);
+            return;
+        };
+        self.selected_collection_item = Some(CollectionSelection::Request {
+            collection_id,
+            item_id: request_id,
+        });
+        self.expanded_collections.insert(collection_id);
         self.suppress_tab_click_selection = false;
         self.method_menu_open = false;
         self.request_context_menu = None;
@@ -61,7 +79,26 @@ impl ApiClientApp {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus_handle);
-        self.selected_collection_item = Some(CollectionSelection::Folder(folder_id));
+        let Some(collection_id) = self
+            .workspace
+            .collections
+            .iter()
+            .find(|c| find_folder(&c.items, folder_id).is_some())
+            .map(|c| c.id)
+        else {
+            self.selected_collection_item = Some(CollectionSelection::Folder {
+                collection_id: 1,
+                item_id: folder_id,
+            });
+            self.expanded_collections.insert(1);
+            self.toggle_folder_expanded(folder_id, cx);
+            return;
+        };
+        self.selected_collection_item = Some(CollectionSelection::Folder {
+            collection_id,
+            item_id: folder_id,
+        });
+        self.expanded_collections.insert(collection_id);
         self.toggle_folder_expanded(folder_id, cx);
     }
 
@@ -95,7 +132,11 @@ impl ApiClientApp {
         cx.notify();
     }
 
-    pub(crate) fn move_open_tab_to_drop_index(&mut self, request_id: usize, drop_index: usize) -> bool {
+    pub(crate) fn move_open_tab_to_drop_index(
+        &mut self,
+        request_id: usize,
+        drop_index: usize,
+    ) -> bool {
         let Some(from_index) = self.request_index_by_id(request_id) else {
             return false;
         };
@@ -195,6 +236,82 @@ impl ApiClientApp {
         }
     }
 
+    pub(crate) fn drop_collection_before_collection(
+        &mut self,
+        target_collection_id: usize,
+        dragged_col: &DraggedCollection,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let src_id = dragged_col.collection_id;
+        let dst_id = target_collection_id;
+        if src_id == dst_id {
+            return;
+        }
+        let src_pos = self
+            .workspace
+            .collections
+            .iter()
+            .position(|c| c.id == src_id);
+        let dst_pos = self
+            .workspace
+            .collections
+            .iter()
+            .position(|c| c.id == dst_id);
+        if let (Some(src_idx), Some(dst_idx)) = (src_pos, dst_pos) {
+            let col = self.workspace.collections.remove(src_idx);
+            let mut insert_idx = dst_idx;
+            if src_idx < dst_idx && insert_idx > 0 {
+                insert_idx = insert_idx.min(self.workspace.collections.len());
+            }
+            self.workspace.collections.insert(insert_idx, col);
+            self.suppress_collection_click = true;
+            self.status_line = "Reordered collections.".into();
+            self.persist_workspace();
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn drop_item_into_collection(
+        &mut self,
+        target_collection_id: usize,
+        dragged_item: &DraggedCollectionItem,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .workspace
+            .move_item_between_collections(dragged_item.item_id, target_collection_id)
+        {
+            self.suppress_collection_click = true;
+            self.status_line = "Moved collection item into collection.".into();
+            self.persist_workspace();
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn drop_collection_at_end(
+        &mut self,
+        dragged_col: &DraggedCollection,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let src_id = dragged_col.collection_id;
+        if let Some(src_idx) = self
+            .workspace
+            .collections
+            .iter()
+            .position(|c| c.id == src_id)
+        {
+            let col = self.workspace.collections.remove(src_idx);
+            self.workspace.collections.push(col);
+            self.suppress_collection_click = true;
+            self.status_line = "Reordered collections to end.".into();
+            self.persist_workspace();
+            cx.notify();
+        }
+    }
+
     pub(crate) fn select_request_from_tab_click(
         &mut self,
         request_id: usize,
@@ -209,7 +326,12 @@ impl ApiClientApp {
         self.select_request_by_id(request_id, cx);
     }
 
-    pub(crate) fn toggle_left_dock(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_left_dock(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.left_dock_open = !self.left_dock_open;
         self.status_line = if self.left_dock_open {
             "Opened collection dock."
@@ -220,7 +342,12 @@ impl ApiClientApp {
         cx.notify();
     }
 
-    pub(crate) fn toggle_right_dock(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_right_dock(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.right_dock_open = !self.right_dock_open;
         self.status_line = if self.right_dock_open {
             "Opened environment dock."
@@ -293,7 +420,12 @@ impl ApiClientApp {
         cx.notify();
     }
 
-    pub(crate) fn finish_pane_resize(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn finish_pane_resize(
+        &mut self,
+        _: &MouseUpEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.active_pane_resize.is_some() {
             self.active_pane_resize = None;
             cx.notify();
@@ -326,7 +458,12 @@ impl ApiClientApp {
         }
     }
 
-    pub(crate) fn add_request(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn add_request(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let request = self.new_request();
         let id = request.id;
         self.method_menu_open = false;
@@ -335,22 +472,113 @@ impl ApiClientApp {
         self.workspace.insert_root_request(request);
         self.open_tabs.push(id);
         self.active_request_id = Some(id);
+        let Some(collection_id) = self
+            .workspace
+            .collections
+            .iter()
+            .find(|c| {
+                c.items
+                    .iter()
+                    .any(|item| matches!(item, CollectionItem::Request(_)))
+            })
+            .map(|c| c.id)
+        else {
+            self.selected_collection_item = Some(CollectionSelection::Request {
+                collection_id: 1,
+                item_id: id,
+            });
+            self.expanded_collections.insert(1);
+            self.url_input
+                .update(cx, |input, cx| input.set_content("", cx));
+            self.status_line = "Created a raw request entry.".into();
+            self.persist_workspace();
+            cx.notify();
+            return;
+        };
+        self.selected_collection_item = Some(CollectionSelection::Request {
+            collection_id,
+            item_id: id,
+        });
+        self.expanded_collections.insert(collection_id);
         self.url_input
             .update(cx, |input, cx| input.set_content("", cx));
-        self.status_line = "Created a raw request entry.".into();
+        self.status_line = "Created request entry.".into();
         self.persist_workspace();
         cx.notify();
     }
 
-    pub(crate) fn add_root_folder(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn add_collection(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = self.workspace.next_collection_id();
+        self.method_menu_open = false;
+        self.clear_request_overlays();
+        self.workspace
+            .insert_root_collection(id, format!("New Collection {id}"));
+        self.expanded_collections.insert(id);
+        self.status_line = format!("Created collection 'New Collection {id}'.").into();
+        self.persist_workspace();
+        cx.notify();
+    }
+
+    pub(crate) fn add_root_folder(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let id = self.next_item_id();
         self.method_menu_open = false;
         self.clear_request_overlays();
         self.workspace
             .insert_root_folder(id, format!("New folder {id}"));
         self.expanded_folders.insert(id);
+        let Some(collection_id) = self
+            .workspace
+            .collections
+            .iter()
+            .find(|c| find_folder(&c.items, id).is_some())
+            .map(|c| c.id)
+        else {
+            self.selected_collection_item = Some(CollectionSelection::Folder {
+                collection_id: 1,
+                item_id: id,
+            });
+            self.expanded_collections.insert(1);
+            self.status_line = "Created folder.".into();
+            self.persist_workspace();
+            cx.notify();
+            return;
+        };
+        self.selected_collection_item = Some(CollectionSelection::Folder {
+            collection_id,
+            item_id: id,
+        });
+        self.expanded_collections.insert(collection_id);
         self.status_line = "Created folder.".into();
         self.persist_workspace();
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_workspace_menu(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.workspace_menu_open = !self.workspace_menu_open;
+        if self.workspace_menu_open {
+            self.refresh_workspaces_list();
+            self.clear_request_overlays();
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn dismiss_workspace_menu(&mut self, cx: &mut Context<Self>) {
+        self.workspace_menu_open = false;
         cx.notify();
     }
 
@@ -439,7 +667,12 @@ impl ApiClientApp {
         self.persist_workspace();
         cx.notify();
     }
-    pub(crate) fn add_param_row(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn add_param_row(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(request) = self.active_request_mut() {
             request.query.push(Header::new("", ""));
             self.status_line = "Added query parameter row.".into();
@@ -468,7 +701,12 @@ impl ApiClientApp {
         cx.notify();
     }
 
-    pub(crate) fn add_header_row(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn add_header_row(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(request) = self.active_request_mut() {
             request.headers.push(Header::new("", ""));
             self.status_line = "Added header row.".into();
@@ -506,7 +744,12 @@ impl ApiClientApp {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn add_path_row(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn add_path_row(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(request) = self.active_request_mut() {
             request.path_params.push(Header::new("", ""));
             self.status_line = "Added path parameter row.".into();
@@ -644,7 +887,12 @@ impl ApiClientApp {
         cx.notify();
     }
 
-    pub(crate) fn format_body_json(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn format_body_json(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.sync_active_request_inputs(cx);
         let Some(raw_body) = self
             .active_request()
@@ -674,7 +922,12 @@ impl ApiClientApp {
         cx.notify();
     }
 
-    pub(crate) fn cycle_environment(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn cycle_environment(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.workspace.environments.is_empty() {
             self.workspace.active_environment =
                 (self.workspace.active_environment + 1) % self.workspace.environments.len();

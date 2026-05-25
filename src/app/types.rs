@@ -251,8 +251,14 @@ pub(crate) enum CollectionItem {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CollectionSelection {
-    Request(usize),
-    Folder(usize),
+    Request {
+        collection_id: usize,
+        item_id: usize,
+    },
+    Folder {
+        collection_id: usize,
+        item_id: usize,
+    },
 }
 
 impl CollectionItem {
@@ -408,13 +414,54 @@ pub(crate) struct Environment {
 }
 
 #[derive(Clone)]
+pub(crate) struct Collection {
+    pub(crate) id: usize,
+    pub(crate) name: SharedString,
+    pub(crate) items: Vec<CollectionItem>,
+}
+
+#[derive(Clone)]
 pub(crate) struct Workspace {
     pub(crate) name: SharedString,
     pub(crate) storage_hint: SharedString,
     pub(crate) active_environment: usize,
     pub(crate) environments: Vec<Environment>,
-    pub(crate) items: Vec<CollectionItem>,
+    pub(crate) collections: Vec<Collection>,
     pub(crate) expanded_folders: HashSet<usize>,
+    pub(crate) expanded_collections: HashSet<usize>,
+}
+
+// ── helpers to find the right collection ──────────────────────────
+
+fn find_collection_mut(
+    collections: &mut [Collection],
+    collection_id: usize,
+) -> Option<&mut Collection> {
+    collections.iter_mut().find(|c| c.id == collection_id)
+}
+
+fn find_collection_by_item_mut(
+    collections: &mut [Collection],
+    item_id: usize,
+) -> Option<(usize, &mut Vec<CollectionItem>)> {
+    for collection in collections.iter_mut() {
+        if find_item(&collection.items, item_id).is_some() {
+            return Some((collection.id, &mut collection.items));
+        }
+    }
+    None
+}
+
+fn find_items_mut_in_collections(
+    collections: &mut [Collection],
+    folder_id: usize,
+) -> Option<&mut Vec<CollectionItem>> {
+    for collection in collections.iter_mut() {
+        if let Some(items) = find_folder_items_mut(&mut collection.items, folder_id) {
+            return Some(items);
+        }
+    }
+    None
 }
 
 impl Workspace {
@@ -439,8 +486,21 @@ impl Workspace {
                     ],
                 },
             ],
-            items: vec![],
+            collections: vec![],
             expanded_folders: HashSet::new(),
+            expanded_collections: HashSet::new(),
+        }
+    }
+
+    pub(crate) fn from_domain_collection(collection: domain::Collection) -> Collection {
+        Collection {
+            id: collection.id.parse().ok().filter(|id| *id > 0).unwrap_or(0),
+            name: collection.name.into(),
+            items: collection
+                .items
+                .into_iter()
+                .map(Self::from_domain_item)
+                .collect(),
         }
     }
 
@@ -474,6 +534,14 @@ impl Workspace {
         }
     }
 
+    pub(crate) fn to_domain_collection(collection: &Collection) -> domain::Collection {
+        domain::Collection {
+            id: collection.id.to_string(),
+            name: collection.name.to_string(),
+            items: collection.items.iter().map(Self::to_domain_item).collect(),
+        }
+    }
+
     pub(crate) fn from_domain(workspace: domain::Workspace, storage_hint: SharedString) -> Self {
         let expanded_folders = workspace
             .expanded_folders
@@ -501,31 +569,78 @@ impl Workspace {
             .iter()
             .position(|environment| environment.name.as_ref() == workspace.active_environment)
             .unwrap_or(0);
+        let expanded_collections = workspace
+            .expanded_collections
+            .iter()
+            .filter_map(|id| id.parse::<usize>().ok())
+            .filter(|id| *id > 0)
+            .collect::<HashSet<_>>();
         Self {
             name: workspace.name.into(),
             storage_hint,
             active_environment,
             environments,
-            items: workspace
+            collections: workspace
                 .items
                 .into_iter()
-                .map(Self::from_domain_item)
+                .map(Self::from_domain_collection)
                 .collect(),
             expanded_folders,
+            expanded_collections,
         }
     }
+
+    // ── helpers to iterate/slice through all collections ──────────
+
+    fn for_each_items_mut<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&mut Vec<CollectionItem>),
+    {
+        for collection in &mut self.collections {
+            f(&mut collection.items);
+        }
+    }
+
+    // ── public API ────────────────────────────────────────────────
 
     pub(crate) fn normalize_request_ids(&mut self) -> usize {
         let mut used_ids = HashSet::new();
         let mut next_id = 1usize;
-        normalize_collection_item_ids(&mut self.items, &mut used_ids, &mut next_id);
-        self.expanded_folders
-            .retain(|folder_id| find_folder(&self.items, *folder_id).is_some());
+        self.for_each_items_mut(|items| {
+            normalize_collection_item_ids(items, &mut used_ids, &mut next_id);
+        });
+        // Clean up stale folder references across all collections.
+        let valid_ids: Vec<usize> = self
+            .expanded_folders
+            .iter()
+            .copied()
+            .filter(|folder_id| self.folder_exists(*folder_id))
+            .collect();
+        self.expanded_folders.clear();
+        self.expanded_folders.extend(valid_ids);
         next_id
+    }
+
+    fn folder_exists(&self, folder_id: usize) -> bool {
+        self.collections
+            .iter()
+            .any(|c| find_folder(&c.items, folder_id).is_some())
     }
 
     pub(crate) fn expanded_folder_ids(&self) -> HashSet<usize> {
         self.expanded_folders.clone()
+    }
+
+    pub(crate) fn expanded_collection_ids(&self) -> HashSet<usize> {
+        if self.expanded_collections.is_empty() {
+            self.collections.iter().map(|c| c.id).collect()
+        } else {
+            self.expanded_collections
+                .iter()
+                .copied()
+                .filter(|id| self.collections.iter().any(|c| c.id == *id))
+                .collect()
+        }
     }
 
     pub(crate) fn request_count(&self) -> usize {
@@ -534,44 +649,113 @@ impl Workspace {
 
     pub(crate) fn request_ids(&self) -> Vec<usize> {
         let mut ids = Vec::new();
-        collect_request_ids(&self.items, &mut ids);
+        for collection in &self.collections {
+            collect_request_ids(&collection.items, &mut ids);
+        }
         ids
     }
 
     pub(crate) fn first_request_id(&self) -> Option<usize> {
-        self.request_ids().first().copied()
+        // First non-empty collection's first request.
+        for collection in &self.collections {
+            let mut ids = Vec::new();
+            collect_request_ids(&collection.items, &mut ids);
+            if let Some(&id) = ids.first() {
+                return Some(id);
+            }
+        }
+        None
+        // self.request_ids().first().copied() would also work
     }
 
     pub(crate) fn request_by_id(&self, request_id: usize) -> Option<&Request> {
-        find_request(&self.items, request_id)
+        for collection in &self.collections {
+            if let Some(request) = find_request(&collection.items, request_id) {
+                return Some(request);
+            }
+        }
+        None
     }
 
     pub(crate) fn request_mut_by_id(&mut self, request_id: usize) -> Option<&mut Request> {
-        find_request_mut(&mut self.items, request_id)
+        for collection in &mut self.collections {
+            if let Some(request) = find_request_mut(&mut collection.items, request_id) {
+                return Some(request);
+            }
+        }
+        None
     }
 
     pub(crate) fn request_by_index(&self, index: usize) -> Option<&Request> {
-        nth_request(&self.items, index, &mut 0)
+        let mut seen = 0;
+        for collection in &self.collections {
+            if let Some(request) = nth_request(&collection.items, index, &mut seen) {
+                return Some(request);
+            }
+        }
+        None
     }
 
+    pub(crate) fn insert_request_in_collection(&mut self, collection_id: usize, request: Request) {
+        if let Some(collection) = find_collection_mut(&mut self.collections, collection_id) {
+            collection.items.push(CollectionItem::Request(request));
+        }
+    }
+
+    /// Insert request at the root level (first collection, or create one).
     pub(crate) fn insert_root_request(&mut self, request: Request) {
-        self.items.push(CollectionItem::Request(request));
+        if let Some(collection) = self.collections.first_mut() {
+            collection.items.push(CollectionItem::Request(request));
+        } else {
+            let id = self.next_collection_id();
+            self.collections.push(Collection {
+                id,
+                name: "Default".into(),
+                items: vec![CollectionItem::Request(request)],
+            });
+        }
     }
 
     pub(crate) fn insert_request_in_folder(&mut self, folder_id: usize, request: Request) -> bool {
-        let Some(items) = find_folder_items_mut(&mut self.items, folder_id) else {
+        let Some(items) = find_items_mut_in_collections(&mut self.collections, folder_id) else {
             return false;
         };
         items.push(CollectionItem::Request(request));
         true
     }
 
-    pub(crate) fn insert_root_folder(&mut self, id: usize, name: impl Into<SharedString>) {
-        self.items.push(CollectionItem::Folder {
+    pub(crate) fn next_collection_id(&self) -> usize {
+        self.collections.iter().map(|c| c.id).max().unwrap_or(0) + 1
+    }
+
+    pub(crate) fn insert_root_collection(&mut self, id: usize, name: impl Into<SharedString>) {
+        self.collections.push(Collection {
             id,
             name: name.into(),
             items: Vec::new(),
         });
+    }
+
+    pub(crate) fn insert_root_folder(&mut self, id: usize, name: impl Into<SharedString>) {
+        // Add folder to the first collection, or create a collection.
+        if let Some(collection) = self.collections.first_mut() {
+            collection.items.push(CollectionItem::Folder {
+                id,
+                name: name.into(),
+                items: Vec::new(),
+            });
+        } else {
+            let cid = self.next_collection_id();
+            self.collections.push(Collection {
+                id: cid,
+                name: "Default".into(),
+                items: vec![CollectionItem::Folder {
+                    id,
+                    name: name.into(),
+                    items: Vec::new(),
+                }],
+            });
+        }
     }
 
     pub(crate) fn insert_folder_in_folder(
@@ -580,7 +764,7 @@ impl Workspace {
         id: usize,
         name: impl Into<SharedString>,
     ) -> bool {
-        let Some(items) = find_folder_items_mut(&mut self.items, parent_id) else {
+        let Some(items) = find_items_mut_in_collections(&mut self.collections, parent_id) else {
             return false;
         };
         items.push(CollectionItem::Folder {
@@ -592,44 +776,126 @@ impl Workspace {
     }
 
     pub(crate) fn folder_name(&self, folder_id: usize) -> Option<SharedString> {
-        find_folder(&self.items, folder_id).map(|(_, name)| name.clone())
+        for collection in &self.collections {
+            if let Some(result) = find_folder(&collection.items, folder_id) {
+                return Some(result.1.clone());
+            }
+        }
+        None
     }
 
-    pub(crate) fn rename_folder(&mut self, folder_id: usize, name: impl Into<SharedString>) -> bool {
-        let Some((_, folder_name)) = find_folder_mut(&mut self.items, folder_id) else {
-            return false;
-        };
-        *folder_name = name.into();
-        true
+    pub(crate) fn rename_folder(
+        &mut self,
+        folder_id: usize,
+        name: impl Into<SharedString>,
+    ) -> bool {
+        for collection in &mut self.collections {
+            if let Some((_, folder_name)) = find_folder_mut(&mut collection.items, folder_id) {
+                *folder_name = name.into();
+                return true;
+            }
+        }
+        false
     }
 
     pub(crate) fn remove_request(&mut self, request_id: usize) -> Option<Request> {
-        remove_request_from_items(&mut self.items, request_id)
+        for collection in &mut self.collections {
+            if let Some(request) = remove_request_from_items(&mut collection.items, request_id) {
+                return Some(request);
+            }
+        }
+        None
     }
 
     pub(crate) fn remove_folder(&mut self, folder_id: usize) -> Option<(SharedString, Vec<usize>)> {
-        remove_folder_from_items(&mut self.items, folder_id)
+        for collection in &mut self.collections {
+            if let Some(result) = remove_folder_from_items(&mut collection.items, folder_id) {
+                return Some(result);
+            }
+        }
+        None
+    }
+
+    pub(crate) fn remove_collection(&mut self, collection_id: usize) -> Option<Collection> {
+        let index = self
+            .collections
+            .iter()
+            .position(|c| c.id == collection_id)?;
+        Some(self.collections.remove(index))
+    }
+
+    pub(crate) fn rename_collection(
+        &mut self,
+        collection_id: usize,
+        name: impl Into<SharedString>,
+    ) -> bool {
+        let Some(collection) = find_collection_mut(&mut self.collections, collection_id) else {
+            return false;
+        };
+        collection.name = name.into();
+        true
     }
 
     pub(crate) fn move_item_before(&mut self, item_id: usize, target_id: usize) -> bool {
         if item_id == target_id || self.item_contains_id(item_id, target_id) {
             return false;
         }
-        let Some(item) = remove_item_from_items(&mut self.items, item_id) else {
+        let Some((_, items)) = find_collection_by_item_mut(&mut self.collections, item_id) else {
             return false;
         };
-        insert_item_before(&mut self.items, target_id, item)
+        let Some(item) = remove_item_from_items(items, item_id) else {
+            return false;
+        };
+        insert_item_before(items, target_id, item)
+    }
+
+    pub(crate) fn move_item_between_collections(
+        &mut self,
+        item_id: usize,
+        target_collection_id: usize,
+    ) -> bool {
+        // Find and remove item from its current collection.
+        let item = {
+            let items = find_collection_by_item_mut(&mut self.collections, item_id);
+            if items.is_none() {
+                return false;
+            }
+            let (_, src_items) = items.unwrap();
+            remove_item_from_items(src_items, item_id)
+        };
+        let Some(item) = item else {
+            return false;
+        };
+        // Insert into target collection's items.
+        let Some(target) = find_collection_mut(&mut self.collections, target_collection_id) else {
+            return false;
+        };
+        target.items.push(item);
+        true
     }
 
     pub(crate) fn move_item_into_folder(&mut self, item_id: usize, folder_id: usize) -> bool {
         if item_id == folder_id || self.item_contains_id(item_id, folder_id) {
             return false;
         }
-        let Some(item) = remove_item_from_items(&mut self.items, item_id) else {
+        // Find the item in any collection.
+        let item = {
+            let items = find_collection_by_item_mut(&mut self.collections, item_id);
+            if items.is_none() {
+                return false;
+            }
+            let (_, src_items) = items.unwrap();
+            remove_item_from_items(src_items, item_id)
+        };
+        let Some(item) = item else {
             return false;
         };
-        let Some(items) = find_folder_items_mut(&mut self.items, folder_id) else {
-            self.items.push(item);
+        // Find the target folder in any collection.
+        let Some(items) = find_items_mut_in_collections(&mut self.collections, folder_id) else {
+            // Target folder not found; push to first collection's root.
+            if let Some(c) = self.collections.first_mut() {
+                c.items.push(item);
+            }
             return false;
         };
         items.push(item);
@@ -637,15 +903,40 @@ impl Workspace {
     }
 
     pub(crate) fn move_item_to_root_end(&mut self, item_id: usize) -> bool {
-        let Some(item) = remove_item_from_items(&mut self.items, item_id) else {
+        let item = {
+            let items = find_collection_by_item_mut(&mut self.collections, item_id);
+            if items.is_none() {
+                return false;
+            }
+            let (_, src_items) = items.unwrap();
+            remove_item_from_items(src_items, item_id)
+        };
+        let Some(item) = item else {
             return false;
         };
-        self.items.push(item);
+        // Push to first collection's root.
+        if let Some(c) = self.collections.first_mut() {
+            c.items.push(item);
+        } else {
+            let id = self.next_collection_id();
+            self.collections.push(Collection {
+                id,
+                name: "Default".into(),
+                items: vec![item],
+            });
+        }
         true
     }
 
     pub(crate) fn item_contains_id(&self, item_id: usize, target_id: usize) -> bool {
-        find_item(&self.items, item_id).is_some_and(|item| item_contains_id(item, target_id))
+        for collection in &self.collections {
+            if find_item(&collection.items, item_id)
+                .is_some_and(|item| item_contains_id(item, target_id))
+            {
+                return true;
+            }
+        }
+        false
     }
 
     pub(crate) fn to_domain(&self) -> domain::Workspace {
@@ -655,6 +946,12 @@ impl Workspace {
             .copied()
             .collect::<Vec<usize>>();
         expanded_folders.sort_unstable();
+        let mut expanded_collections = self
+            .expanded_collections
+            .iter()
+            .copied()
+            .collect::<Vec<usize>>();
+        expanded_collections.sort_unstable();
         domain::Workspace {
             id: "local".to_string(),
             name: self.name.to_string(),
@@ -671,8 +968,16 @@ impl Workspace {
                         .collect(),
                 })
                 .collect(),
-            items: self.items.iter().map(Self::to_domain_item).collect(),
+            items: self
+                .collections
+                .iter()
+                .map(Self::to_domain_collection)
+                .collect(),
             expanded_folders: expanded_folders
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect(),
+            expanded_collections: expanded_collections
                 .into_iter()
                 .map(|id| id.to_string())
                 .collect(),
@@ -753,7 +1058,10 @@ pub(crate) fn find_request(items: &[CollectionItem], request_id: usize) -> Optio
     None
 }
 
-pub(crate) fn find_request_mut(items: &mut [CollectionItem], request_id: usize) -> Option<&mut Request> {
+pub(crate) fn find_request_mut(
+    items: &mut [CollectionItem],
+    request_id: usize,
+) -> Option<&mut Request> {
     for item in items {
         match item {
             CollectionItem::Request(request) if request.id == request_id => return Some(request),
@@ -1048,7 +1356,10 @@ impl Request {
         request
     }
 
-    pub(crate) fn to_resolved_domain(&self, environment: &Environment) -> Result<domain::Request, String> {
+    pub(crate) fn to_resolved_domain(
+        &self,
+        environment: &Environment,
+    ) -> Result<domain::Request, String> {
         let mut request = self.to_domain();
         request.url = resolve_template(&request.url, environment)?;
         request.url = resolve_path_params(&request.url, &self.path_params)?;
@@ -1069,4 +1380,3 @@ impl Request {
         Ok(request)
     }
 }
-

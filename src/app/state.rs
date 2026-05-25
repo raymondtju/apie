@@ -112,7 +112,11 @@ impl ApiClientApp {
         }
     }
 
-    pub(crate) fn set_active_request_body(&mut self, body: impl Into<SharedString>, cx: &mut Context<Self>) {
+    pub(crate) fn set_active_request_body(
+        &mut self,
+        body: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
         let body: SharedString = body.into();
         if let Some(request) = self.active_request_mut() {
             request.body = body.clone();
@@ -265,7 +269,10 @@ impl ApiClientApp {
         // Keep existing values for matching names, add new ones, remove stale ones.
         let mut reconciled = Vec::new();
         for url_param in url_params {
-            let existing = request.path_params.iter().find(|p| p.name == url_param.name);
+            let existing = request
+                .path_params
+                .iter()
+                .find(|p| p.name == url_param.name);
             reconciled.push(existing.cloned().unwrap_or(url_param));
         }
         request.path_params = reconciled;
@@ -275,7 +282,9 @@ impl ApiClientApp {
     /// subsequent calls to `reconcile_path_params_from_url()` see the live URL.
     pub(crate) fn sync_url_input_to_request(&mut self, cx: &Context<Self>) {
         let url_input_value = self.url_input.read(cx).value();
-        let Some(request) = self.active_request_mut() else { return };
+        let Some(request) = self.active_request_mut() else {
+            return;
+        };
         if request.url.as_ref() != url_input_value {
             request.url = url_input_value.into();
         }
@@ -299,7 +308,9 @@ impl ApiClientApp {
             }
         }
         if changed {
-            let Some(request) = self.active_request_mut() else { return };
+            let Some(request) = self.active_request_mut() else {
+                return;
+            };
             for (index, value) in updates {
                 if let Some(param) = request.path_params.get_mut(index) {
                     param.value = value.into();
@@ -332,7 +343,7 @@ impl ApiClientApp {
     }
 
     pub(crate) fn persist_settings(&mut self) {
-        self.settings = self.settings.clamped();
+        self.settings = self.settings.clone().clamped();
         match save_app_settings(&self.settings_path, &self.settings) {
             Ok(()) => {
                 self.status_line = format!(
@@ -349,6 +360,7 @@ impl ApiClientApp {
 
     pub(crate) fn persist_workspace(&mut self) {
         self.workspace.expanded_folders = self.expanded_folders.clone();
+        self.workspace.expanded_collections = self.expanded_collections.clone();
         let workspace_path = self.workspace_path.clone();
         let snapshot = self.workspace.to_domain();
         std::thread::spawn(move || {
@@ -356,5 +368,84 @@ impl ApiClientApp {
                 eprintln!("Could not save workspace: {error}");
             }
         });
+    }
+
+    pub(crate) fn refresh_workspaces_list(&mut self) {
+        let workspaces_dir = self
+            .settings_path
+            .parent()
+            .map(|parent| parent.join("workspaces"))
+            .unwrap_or_else(|| PathBuf::from("workspaces"));
+
+        let mut list = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&workspaces_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map_or(false, |ext| ext == "json") {
+                    if let Ok(file_content) = std::fs::read_to_string(&path) {
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&file_content)
+                        {
+                            let name = parsed
+                                .get("workspace")
+                                .and_then(|w| w.get("name"))
+                                .and_then(|n| n.as_str())
+                                .unwrap_or_else(|| {
+                                    path.file_stem()
+                                        .and_then(|s| s.to_str())
+                                        .unwrap_or("Unnamed Workspace")
+                                });
+                            list.push((name.to_string(), path));
+                        }
+                    }
+                }
+            }
+        }
+
+        if !list.iter().any(|(_, p)| p == &self.workspace_path) {
+            list.push((self.workspace.name.to_string(), self.workspace_path.clone()));
+        }
+
+        list.sort_by(|a, b| a.0.cmp(&b.0));
+        self.workspaces_list = list;
+    }
+
+    pub(crate) fn switch_to_workspace(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let mut workspace = match domain::load_workspace(&path) {
+            Ok(w) => Workspace::from_domain(w, path.to_string_lossy().to_string().into()),
+            Err(_) => Workspace::sample(),
+        };
+        let next_item_id = workspace.normalize_request_ids();
+        let first_request_id = workspace.first_request_id();
+
+        self.workspace = workspace;
+        self.workspace_path = path.clone();
+        self.next_item_id = next_item_id;
+        self.expanded_folders = self.workspace.expanded_folder_ids();
+        self.expanded_collections = self.workspace.expanded_collection_ids();
+        self.open_tabs = first_request_id.into_iter().collect();
+        self.active_request_id = first_request_id;
+        self.selected_collection_item = first_request_id.map(|id| CollectionSelection::Request {
+            collection_id: 1,
+            item_id: id,
+        });
+
+        let initial_url = first_request_id
+            .and_then(|id| self.workspace.request_by_id(id).map(|req| req.url.clone()))
+            .unwrap_or_else(|| "".into());
+        self.url_input
+            .update(cx, |input, cx| input.set_content(&initial_url, cx));
+
+        self.body_inputs.clear();
+        self.response_body_inputs.clear();
+        self.formatted_body_cache = None;
+        self.clear_request_overlays();
+
+        // Save active workspace path to settings
+        self.settings.active_workspace = Some(path.to_string_lossy().to_string());
+        self.persist_settings();
+
+        self.status_line = format!("Switched to workspace '{}'", self.workspace.name).into();
+        self.refresh_workspaces_list();
+        cx.notify();
     }
 }

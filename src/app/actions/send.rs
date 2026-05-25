@@ -1,7 +1,12 @@
 use super::*;
 
 impl ApiClientApp {
-    pub(crate) fn send_request(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn send_request(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.send_request_impl(cx);
     }
 
@@ -43,7 +48,8 @@ impl ApiClientApp {
         if let Some(request) = self.active_request_mut() {
             request.response = None;
         }
-        self.response_body_inputs.retain(|(id, _), _| *id != request_id);
+        self.response_body_inputs
+            .retain(|(id, _), _| *id != request_id);
 
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let cancel_for_task = cancel.clone();
@@ -178,13 +184,25 @@ impl ApiClientApp {
         self.cancel_active_dialog(cx);
     }
 
-    pub(crate) fn submit_active_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn submit_active_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if self.rename_request_dialog.is_some() {
             self.confirm_rename_request(&gpui::ClickEvent::default(), window, cx);
             return true;
         }
         if self.rename_folder_dialog.is_some() {
             self.confirm_rename_folder(&gpui::ClickEvent::default(), window, cx);
+            return true;
+        }
+        if self.rename_collection_dialog.is_some() {
+            self.confirm_rename_collection(&gpui::ClickEvent::default(), window, cx);
+            return true;
+        }
+        if self.create_workspace_dialog.is_some() {
+            self.confirm_create_workspace(&gpui::ClickEvent::default(), window, cx);
             return true;
         }
         if self.settings_dialog_open {
@@ -198,6 +216,10 @@ impl ApiClientApp {
         }
         if self.delete_folder_dialog.is_some() {
             self.confirm_delete_folder(&gpui::ClickEvent::default(), window, cx);
+            return true;
+        }
+        if self.delete_collection_dialog.is_some() {
+            self.confirm_delete_collection(&gpui::ClickEvent::default(), window, cx);
             return true;
         }
         false
@@ -235,7 +257,8 @@ impl ApiClientApp {
         self.workspace.insert_root_request(request);
         self.open_tabs.push(id);
         self.active_request_id = Some(id);
-        self.url_input.update(cx, |input, cx| input.set_content("", cx));
+        self.url_input
+            .update(cx, |input, cx| input.set_content("", cx));
         self.status_line = "Created a raw request entry.".into();
         self.persist_workspace();
         cx.notify();
@@ -267,15 +290,17 @@ impl ApiClientApp {
         }
 
         match self.selected_collection_item {
-            Some(CollectionSelection::Request(request_id))
-                if self.workspace.request_by_id(request_id).is_some() =>
-            {
+            Some(CollectionSelection::Request {
+                collection_id: _,
+                item_id: request_id,
+            }) if self.workspace.request_by_id(request_id).is_some() => {
                 self.open_delete_request_dialog(request_id, window, cx);
                 true
             }
-            Some(CollectionSelection::Folder(folder_id))
-                if self.workspace.folder_name(folder_id).is_some() =>
-            {
+            Some(CollectionSelection::Folder {
+                collection_id: _,
+                item_id: folder_id,
+            }) if self.workspace.folder_name(folder_id).is_some() => {
                 self.open_delete_folder_dialog(folder_id, window, cx);
                 true
             }
@@ -294,23 +319,28 @@ impl ApiClientApp {
     ) -> bool {
         if self.rename_request_dialog.is_some()
             || self.rename_folder_dialog.is_some()
+            || self.rename_collection_dialog.is_some()
             || self.delete_request_dialog.is_some()
             || self.delete_folder_dialog.is_some()
+            || self.delete_collection_dialog.is_some()
+            || self.create_workspace_dialog.is_some()
             || self.settings_dialog_open
         {
             return false;
         }
 
         match self.selected_collection_item {
-            Some(CollectionSelection::Request(request_id))
-                if self.workspace.request_by_id(request_id).is_some() =>
-            {
+            Some(CollectionSelection::Request {
+                collection_id: _,
+                item_id: request_id,
+            }) if self.workspace.request_by_id(request_id).is_some() => {
                 self.open_rename_request_dialog(request_id, window, cx);
                 true
             }
-            Some(CollectionSelection::Folder(folder_id))
-                if self.workspace.folder_name(folder_id).is_some() =>
-            {
+            Some(CollectionSelection::Folder {
+                collection_id: _,
+                item_id: folder_id,
+            }) if self.workspace.folder_name(folder_id).is_some() => {
                 self.open_rename_folder_dialog(folder_id, window, cx);
                 true
             }
@@ -325,8 +355,11 @@ impl ApiClientApp {
     pub(crate) fn cancel_active_dialog(&mut self, cx: &mut Context<Self>) -> bool {
         if self.rename_request_dialog.take().is_some()
             || self.rename_folder_dialog.take().is_some()
+            || self.rename_collection_dialog.take().is_some()
             || self.delete_request_dialog.take().is_some()
             || self.delete_folder_dialog.take().is_some()
+            || self.delete_collection_dialog.take().is_some()
+            || self.create_workspace_dialog.take().is_some()
         {
             cx.notify();
             return true;

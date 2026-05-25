@@ -7,7 +7,7 @@ impl ApiClientApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.draft_settings = self.settings;
+        self.draft_settings = self.settings.clone();
         self.settings_dialog_open = true;
         self.method_menu_open = false;
         self.clear_request_overlays();
@@ -21,7 +21,7 @@ impl ApiClientApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.draft_settings = self.settings;
+        self.draft_settings = self.settings.clone();
         self.settings_dialog_open = true;
         self.method_menu_open = false;
         self.clear_request_overlays();
@@ -40,9 +40,9 @@ impl ApiClientApp {
     }
 
     pub(crate) fn apply_draft_settings(&mut self, cx: &mut Context<Self>) {
-        self.settings = self.draft_settings.clamped();
-        self.draft_settings = self.settings;
-        self.theme_mode = Self::theme_mode_from_settings(self.settings, cx);
+        self.settings = self.draft_settings.clone().clamped();
+        self.draft_settings = self.settings.clone();
+        self.theme_mode = Self::theme_mode_from_settings(self.settings.clone(), cx);
         self.persist_settings();
         cx.notify();
     }
@@ -57,7 +57,12 @@ impl ApiClientApp {
         self.apply_draft_settings(cx);
     }
 
-    pub(crate) fn cycle_draft_theme(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn cycle_draft_theme(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.draft_settings.theme_preference = self.draft_settings.theme_preference.next();
         self.apply_draft_settings(cx);
     }
@@ -155,7 +160,12 @@ impl ApiClientApp {
         cx.notify();
     }
 
-    pub(crate) fn dismiss_method_menu(&mut self, _: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn dismiss_method_menu(
+        &mut self,
+        _: &MouseDownEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.method_menu_open = false;
         cx.notify();
     }

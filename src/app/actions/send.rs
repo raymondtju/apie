@@ -2,6 +2,10 @@ use super::*;
 
 impl ApiClientApp {
     pub(crate) fn send_request(&mut self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.send_request_impl(cx);
+    }
+
+    fn send_request_impl(&mut self, cx: &mut Context<Self>) {
         self.method_menu_open = false;
         self.request_context_menu = None;
         self.method_menu_open = false;
@@ -130,7 +134,7 @@ impl ApiClientApp {
             return;
         }
         if self.url_input.read(cx).is_focused(window) {
-            self.send_active_request(cx);
+            self.send_request_impl(cx);
             return;
         }
         let focused_body_input = self
@@ -215,6 +219,37 @@ impl ApiClientApp {
         cx: &mut Context<Self>,
     ) {
         self.open_rename_dialog_for_selected_collection_item(window, cx);
+    }
+
+    pub(crate) fn new_tab_from_action(
+        &mut self,
+        _: &NewTab,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let request = self.new_request();
+        let id = request.id;
+        self.method_menu_open = false;
+        self.clear_request_overlays();
+        self.active_panel = Panel::Params;
+        self.workspace.insert_root_request(request);
+        self.open_tabs.push(id);
+        self.active_request_id = Some(id);
+        self.url_input.update(cx, |input, cx| input.set_content("", cx));
+        self.status_line = "Created a raw request entry.".into();
+        self.persist_workspace();
+        cx.notify();
+    }
+
+    pub(crate) fn close_tab_from_action(
+        &mut self,
+        _: &CloseTab,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(request_id) = self.active_request_id {
+            self.close_request_tab(request_id, cx);
+        }
     }
 
     pub(crate) fn open_delete_dialog_for_selected_collection_item(
@@ -304,6 +339,7 @@ impl ApiClientApp {
         false
     }
 
+    #[allow(dead_code)]
     pub(crate) fn send_active_request(&mut self, cx: &mut Context<Self>) {
         self.method_menu_open = false;
         self.request_context_menu = None;

@@ -61,14 +61,15 @@ impl FormattedBodyCache {
 }
 
 actions!(
-    api_client,
-    [
+    api_client, [
         SendFocusedRequest,
         OpenSettings,
         SubmitDialog,
         CancelDialog,
         DeleteCollectionSelection,
-        RenameCollectionSelection
+        RenameCollectionSelection,
+        NewTab,
+        CloseTab
     ]
 );
 
@@ -81,6 +82,8 @@ pub(crate) fn bind_app_keys(cx: &mut App) {
         KeyBinding::new("delete", DeleteCollectionSelection, Some("ApiClient")),
         KeyBinding::new("f2", RenameCollectionSelection, Some("ApiClient")),
         KeyBinding::new("ctrl-,", OpenSettings, None),
+        KeyBinding::new("ctrl-t", NewTab, None),
+        KeyBinding::new("ctrl-w", CloseTab, None),
     ]);
 }
 

@@ -3507,6 +3507,8 @@ impl Render for ApiClientApp {
             .on_action(cx.listener(Self::cancel_dialog_from_action))
             .on_action(cx.listener(Self::delete_collection_selection_from_action))
             .on_action(cx.listener(Self::rename_collection_selection_from_action))
+            .on_action(cx.listener(Self::new_tab_from_action))
+            .on_action(cx.listener(Self::close_tab_from_action))
             .on_mouse_move(cx.listener(Self::update_pane_resize))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::finish_pane_resize))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::finish_pane_resize))

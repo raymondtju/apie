@@ -108,9 +108,8 @@ async fn send_single(
 
         let dns_name = ServerName::try_from(host.to_string())
             .map_err(|_| ClientError::InvalidResponse("Invalid DNS name for TLS".into()))?;
-        let root_store = rustls::RootCertStore::from_iter(
-            webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
-        );
+        let root_store =
+            rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         let config = ClientConfig::builder()
             .with_root_certificates(root_store)
             .with_no_client_auth();
@@ -142,9 +141,7 @@ async fn send_single(
     let method = http::Method::from_bytes(request.method.as_str().as_bytes())
         .map_err(|e| ClientError::InvalidResponse(e.to_string()))?;
 
-    let mut req_builder = http::Request::builder()
-        .method(method)
-        .uri(uri);
+    let mut req_builder = http::Request::builder().method(method).uri(uri);
 
     for header in request.headers.iter().filter(|h| h.enabled) {
         if let (Ok(name), Ok(value)) = (
@@ -165,7 +162,10 @@ async fn send_single(
     }
 
     let body_value = match &request.body {
-        Body::Raw { content_type, value } if !value.is_empty() => {
+        Body::Raw {
+            content_type,
+            value,
+        } if !value.is_empty() => {
             let has_content_type = request
                 .headers
                 .iter()

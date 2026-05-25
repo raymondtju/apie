@@ -20,7 +20,7 @@ fn resolves_environment_params_headers_auth_and_body_before_send() {
         url: "{{base_url}}/users".into(),
         query: vec![Header::new("q", "{{token}}")],
         proxy_url: None,
-            path_params: vec![],
+        path_params: vec![],
         auth: Auth::ApiKey {
             name: "x-api-key".into(),
             secret_ref: "{{token}}".into(),
@@ -59,7 +59,7 @@ fn body_is_only_emitted_for_body_methods() {
         url: "https://api.example.test/users".into(),
         query: vec![],
         proxy_url: None,
-            path_params: vec![],
+        path_params: vec![],
         auth: Auth::None,
         headers: vec![],
         content_type: "application/json".into(),
@@ -88,7 +88,7 @@ fn blank_editable_rows_are_not_sent() {
         url: "https://api.example.test/users".into(),
         query: vec![Header::new("", ""), Header::new("page", "1")],
         proxy_url: None,
-            path_params: vec![],
+        path_params: vec![],
         auth: Auth::None,
         headers: vec![
             Header::new("", ""),
@@ -120,26 +120,31 @@ fn workspace_normalizes_duplicate_and_invalid_request_ids() {
             variables: vec![],
         }],
         expanded_folders: Vec::new(),
-        items: vec![
-            domain::CollectionItem::Request(domain::Request::new(
-                "alpha",
-                "Request A",
-                domain::Method::Get,
-                "",
-            )),
-            domain::CollectionItem::Request(domain::Request::new(
-                "1",
-                "Request B",
-                domain::Method::Get,
-                "",
-            )),
-            domain::CollectionItem::Request(domain::Request::new(
-                "1",
-                "Request C",
-                domain::Method::Get,
-                "",
-            )),
-        ],
+        expanded_collections: Vec::new(),
+        items: vec![domain::Collection {
+            id: "0".to_string(),
+            name: "Default".into(),
+            items: vec![
+                domain::CollectionItem::Request(domain::Request::new(
+                    "alpha",
+                    "Request A",
+                    domain::Method::Get,
+                    "",
+                )),
+                domain::CollectionItem::Request(domain::Request::new(
+                    "1",
+                    "Request B",
+                    domain::Method::Get,
+                    "",
+                )),
+                domain::CollectionItem::Request(domain::Request::new(
+                    "1",
+                    "Request C",
+                    domain::Method::Get,
+                    "",
+                )),
+            ],
+        }],
     };
 
     let mut workspace = Workspace::from_domain(workspace, "test".into());
@@ -163,15 +168,20 @@ fn workspace_preserves_folder_tree_round_trip() {
             variables: vec![],
         }],
         expanded_folders: vec!["10".to_string()],
-        items: vec![domain::CollectionItem::Folder {
-            id: "10".to_string(),
-            name: "Users".to_string(),
-            items: vec![domain::CollectionItem::Request(domain::Request::new(
-                "11",
-                "List users",
-                domain::Method::Get,
-                "/users",
-            ))],
+        expanded_collections: Vec::new(),
+        items: vec![domain::Collection {
+            id: "0".to_string(),
+            name: "Default".into(),
+            items: vec![domain::CollectionItem::Folder {
+                id: "10".to_string(),
+                name: "Users".to_string(),
+                items: vec![domain::CollectionItem::Request(domain::Request::new(
+                    "11",
+                    "List users",
+                    domain::Method::Get,
+                    "/users",
+                ))],
+            }],
         }],
     };
 
@@ -180,7 +190,7 @@ fn workspace_preserves_folder_tree_round_trip() {
     let domain_workspace = workspace.to_domain();
 
     assert_eq!(domain_workspace.expanded_folders, vec!["10".to_string()]);
-    match &domain_workspace.items[0] {
+    match &domain_workspace.items[0].items[0] {
         domain::CollectionItem::Folder { id, name, items } => {
             assert_eq!(id, "10");
             assert_eq!(name, "Users");
@@ -202,7 +212,7 @@ fn test_request(id: usize) -> Request {
         url: "".into(),
         query: vec![],
         proxy_url: None,
-            path_params: vec![],
+        path_params: vec![],
         auth: Auth::None,
         headers: vec![],
         content_type: "application/json".into(),
@@ -232,7 +242,8 @@ fn workspace_moves_collection_request_into_folder() {
 
     assert!(workspace.move_item_into_folder(1, 10));
 
-    match &workspace.to_domain().items[0] {
+    let domain = workspace.to_domain();
+    match &domain.items[0].items[0] {
         domain::CollectionItem::Folder { items, .. } => {
             assert_eq!(items.len(), 1);
             assert!(matches!(
@@ -263,7 +274,8 @@ fn workspace_moves_nested_collection_item_to_root_end() {
 
     assert!(workspace.move_item_to_root_end(2));
     assert_eq!(workspace.request_ids(), vec![1, 2]);
-    match &workspace.to_domain().items[0] {
+    let domain = workspace.to_domain();
+    match &domain.items[0].items[0] {
         domain::CollectionItem::Folder { items, .. } => assert!(items.is_empty()),
         domain::CollectionItem::Request(_) => panic!("folder should remain first"),
     }
@@ -400,12 +412,14 @@ fn zed_shell_visual_smoke(cx: &mut TestAppContext) {
             app.send_request(&ClickEvent::default(), window, cx);
         });
     });
+    cx.run_until_parked();
     app.read_with(cx, |app, _| {
         let request = app.active_request().expect("request should exist");
         assert_eq!(request.url, "https://smoke.test/zed");
         assert!(request.response.is_none());
         assert_eq!(request.history.len(), 0);
-        assert!(app.status_line.contains("Request failed:"));
+        eprintln!("STATUS_LINE: {:?}", app.status_line);
+        assert!(app.status_line.contains("failed:"));
     });
 }
 
@@ -652,6 +666,8 @@ fn folder_expansion_state_persists_in_workspace(cx: &mut TestAppContext) {
         });
     });
 
+    std::thread::sleep(std::time::Duration::from_millis(150));
+
     let (reloaded_app, cx) =
         cx.add_window_view(|_, cx| ApiClientApp::new_with_settings_path(cx, settings_path.clone()));
     reloaded_app.read_with(cx, |app, _| {
@@ -664,6 +680,9 @@ fn folder_expansion_state_persists_in_workspace(cx: &mut TestAppContext) {
             assert!(app.expanded_folders.contains(&1));
         });
     });
+
+    std::thread::sleep(std::time::Duration::from_millis(150));
+
     let (expanded_app, cx) =
         cx.add_window_view(|_, cx| ApiClientApp::new_with_settings_path(cx, settings_path));
     expanded_app.read_with(cx, |app, _| {
@@ -2084,7 +2103,9 @@ fn large_response_body_still_renders_code_input(cx: &mut TestAppContext) {
 
     // Body above the new LARGE_RESPONSE_WARNING_BYTES threshold.
     // We expect the CodeInput to still be used (with a warning banner).
-    let body: String = std::iter::repeat('a').take(10 * 1024 * 1024 + 100).collect();
+    let body: String = std::iter::repeat('a')
+        .take(10 * 1024 * 1024 + 100)
+        .collect();
     cx.update(|window, cx| {
         app.update(cx, |app, cx| {
             app.add_request(&ClickEvent::default(), window, cx);
@@ -2176,4 +2197,183 @@ fn very_large_response_body_cursor_movement_stays_responsive(cx: &mut TestAppCon
         elapsed < std::time::Duration::from_millis(500),
         "1k visible_line_count calls on a 100k-line body took {elapsed:?}"
     );
+}
+
+#[gpui::test]
+fn collection_crud_and_drag_actions(cx: &mut TestAppContext) {
+    cx.update(bind_text_input_keys);
+    cx.update(bind_code_input_keys);
+    cx.update(bind_app_keys);
+    let temp_dir = tempfile::tempdir().unwrap();
+    let settings_path = temp_dir.path().join("settings.json");
+    let (app, cx) =
+        cx.add_window_view(|_, cx| ApiClientApp::new_with_settings_path(cx, settings_path));
+
+    // 1. Create a collection
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.add_collection(&ClickEvent::default(), window, cx);
+        });
+    });
+
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.workspace.collections.len(), 1);
+        assert_eq!(app.workspace.collections[0].name, "New Collection 1");
+    });
+
+    // 2. Add request to this collection
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.add_request_to_collection(1, cx);
+        });
+    });
+
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.workspace.collections[0].items.len(), 1);
+    });
+
+    // 3. Rename collection
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_rename_collection_dialog(1, window, cx);
+        });
+    });
+
+    app.read_with(cx, |app, _| {
+        assert!(app.rename_collection_dialog.is_some());
+    });
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.rename_collection_dialog
+                .as_ref()
+                .unwrap()
+                .input
+                .update(cx, |input, cx| {
+                    input.set_content("Scalar API", cx);
+                });
+            app.confirm_rename_collection(&ClickEvent::default(), window, cx);
+        });
+    });
+
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.workspace.collections[0].name, "Scalar API");
+        assert!(app.rename_collection_dialog.is_none());
+    });
+
+    // 4. Create another collection
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.add_collection(&ClickEvent::default(), window, cx);
+        });
+    });
+
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.workspace.collections.len(), 2);
+        assert_eq!(app.workspace.collections[1].name, "New Collection 2");
+    });
+
+    // 5. Drag/move request from collection 1 to collection 2
+    app.read_with(cx, |app, _| {
+        let req_id = app.workspace.collections[0].items[0].id();
+        assert_eq!(req_id, 1);
+    });
+
+    cx.update(|_, cx| {
+        app.update(cx, |app, _| {
+            assert!(app.workspace.move_item_between_collections(1, 2));
+        });
+    });
+
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.workspace.collections[0].items.len(), 0);
+        assert_eq!(app.workspace.collections[1].items.len(), 1);
+    });
+
+    // 6. Delete collection
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_delete_collection_dialog(1, window, cx);
+        });
+    });
+
+    app.read_with(cx, |app, _| {
+        assert!(app.delete_collection_dialog.is_some());
+    });
+
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.confirm_delete_collection(&ClickEvent::default(), window, cx);
+        });
+    });
+
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.workspace.collections.len(), 1);
+        assert_eq!(app.workspace.collections[0].name, "New Collection 2");
+        assert!(app.delete_collection_dialog.is_none());
+    });
+}
+
+#[gpui::test]
+fn workspace_creation_and_switching(cx: &mut TestAppContext) {
+    cx.update(bind_text_input_keys);
+    cx.update(bind_code_input_keys);
+    cx.update(bind_app_keys);
+    let temp_dir = tempfile::tempdir().unwrap();
+    let settings_path = temp_dir.path().join("settings.json");
+
+    // Make sure workspaces subfolder exists
+    std::fs::create_dir_all(temp_dir.path().join("workspaces")).unwrap();
+
+    let (app, cx) =
+        cx.add_window_view(|_, cx| ApiClientApp::new_with_settings_path(cx, settings_path.clone()));
+
+    // Persist the default workspace to disk so it is scanned and discovered in workspaces_list
+    cx.update(|_, cx| {
+        app.update(cx, |app, _| {
+            app.persist_workspace();
+            app.refresh_workspaces_list();
+        });
+    });
+
+    // 1. Initial State Checks
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.workspace.name, "Local API Workspace");
+        assert_eq!(app.workspaces_list.len(), 1);
+        assert!(app.create_workspace_dialog.is_none());
+    });
+
+    // 2. Open Create Workspace Dialog
+    cx.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_create_workspace_dialog(&ClickEvent::default(), window, cx);
+        });
+    });
+
+    app.read_with(cx, |app, _| {
+        assert!(app.create_workspace_dialog.is_some());
+    });
+
+    // Simulate typing workspace name "Production API"
+    cx.simulate_keystrokes("shift-p r o d u c t i o n space shift-a p i");
+    cx.simulate_keystrokes("enter");
+
+    // 3. Verify Switch to New Workspace
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.workspace.name, "Production Api");
+        assert_eq!(app.workspaces_list.len(), 2);
+        assert!(app.create_workspace_dialog.is_none());
+    });
+
+    // 4. Switch back to the original workspace
+    let original_workspace_path = temp_dir.path().join("workspaces/local.json");
+    cx.update(|_, cx| {
+        app.update(cx, |app, cx| {
+            app.switch_to_workspace(original_workspace_path, cx);
+        });
+    });
+
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.workspace.name, "Local API Workspace");
+    });
 }

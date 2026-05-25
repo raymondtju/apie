@@ -9,7 +9,7 @@ use gpui::{
     App, AppContext, Application, AssetSource, Bounds, Result, SharedString, TitlebarOptions,
     WindowBackgroundAppearance, WindowBounds, WindowDecorations, WindowOptions, px, size,
 };
-use ui::{bind_code_input_keys, bind_text_input_keys, icon_bytes_for_path, ICON_FILENAMES};
+use ui::{ICON_FILENAMES, bind_code_input_keys, bind_text_input_keys, icon_bytes_for_path};
 
 /// Embedded asset source. All UI icons are compiled into the binary via include_bytes!
 /// (see IconName::bytes and helpers in src/ui/icons.rs). This eliminates the previous

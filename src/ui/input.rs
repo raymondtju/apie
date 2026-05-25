@@ -2,10 +2,11 @@ use std::{ops::Range, time::Duration};
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
-    Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, InteractiveElement,
-    KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
-    Pixels, Point, ShapedLine, SharedString, Style, Task, TextRun, UTF16Selection, UnderlineStyle,
-    Window, actions, div, fill, point, prelude::*, px, relative, rgb, rgba, size,
+    Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId,
+    InteractiveElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine, SharedString, Style, Task, TextRun,
+    UTF16Selection, UnderlineStyle, Window, actions, div, fill, point, prelude::*, px, relative,
+    rgb, rgba, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -547,6 +548,7 @@ impl EntityInputHandler for TextInput {
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.marked_range.take();
         self.reset_cursor_blink(cx);
+        cx.emit(());
     }
 
     fn replace_and_mark_text_in_range(
@@ -836,6 +838,8 @@ impl Render for TextInput {
             .child(TextElement { input: cx.entity() })
     }
 }
+
+impl EventEmitter<()> for TextInput {}
 
 impl Focusable for TextInput {
     fn focus_handle(&self, _: &App) -> FocusHandle {

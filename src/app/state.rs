@@ -36,6 +36,7 @@ impl ApiClientApp {
         cx: &mut Context<Self>,
     ) -> Entity<TextInput> {
         let key = key.into();
+        let is_new = !self.field_inputs.contains_key(&key);
         let input = self
             .field_inputs
             .entry(key)
@@ -45,6 +46,12 @@ impl ApiClientApp {
                 })
             })
             .clone();
+        if is_new {
+            cx.subscribe(&input, |_, _, _, cx| {
+                cx.notify();
+            })
+            .detach();
+        }
         input.update(cx, |input, _| input.set_placeholder(placeholder));
         input
     }
@@ -122,11 +129,13 @@ impl ApiClientApp {
         let Some(request_id) = self.active_request().map(|request| request.id) else {
             return;
         };
+        let current_url = self.url_input.read(cx).value();
         let value_for = |key: String, inputs: &BTreeMap<String, Entity<TextInput>>| {
             inputs.get(&key).map(|input| input.read(cx).value())
         };
         let mut query_updates = Vec::new();
         let mut header_updates = Vec::new();
+        let mut path_updates = Vec::new();
         let mut content_type =
             value_for(format!("req:{request_id}:content-type"), &self.field_inputs);
         let mut body = self
@@ -160,6 +169,18 @@ impl ApiClientApp {
                     ),
                 ));
             }
+            for index in 0..request.path_params.len() {
+                path_updates.push((
+                    value_for(
+                        format!("req:{request_id}:path:{index}:name"),
+                        &self.field_inputs,
+                    ),
+                    value_for(
+                        format!("req:{request_id}:path:{index}:value"),
+                        &self.field_inputs,
+                    ),
+                ));
+            }
             for key in ["username", "password", "label", "secret", "name"] {
                 if let Some(value) =
                     value_for(format!("req:{request_id}:auth:{key}"), &self.field_inputs)
@@ -185,6 +206,14 @@ impl ApiClientApp {
             }
             if let Some(Some(value)) = header_updates.get(index).map(|(_, value)| value.as_ref()) {
                 header.value = value.clone().into();
+            }
+        }
+        for (index, param) in request.path_params.iter_mut().enumerate() {
+            if let Some(Some(value)) = path_updates.get(index).map(|(name, _)| name.as_ref()) {
+                param.name = value.clone().into();
+            }
+            if let Some(Some(value)) = path_updates.get(index).map(|(_, value)| value.as_ref()) {
+                param.value = value.clone().into();
             }
         }
         if let Some(value) = content_type.take() {
@@ -219,6 +248,61 @@ impl ApiClientApp {
                 }
                 if let Some(value) = auth_updates.get("secret") {
                     *secret_ref = value.clone().into();
+                }
+            }
+        }
+
+        // Sync URL from input and reconcile path params from {name} patterns.
+        request.url = current_url.clone().into();
+        self.reconcile_path_params_from_url();
+    }
+
+    pub(crate) fn reconcile_path_params_from_url(&mut self) {
+        let Some(request) = self.active_request_mut() else {
+            return;
+        };
+        let url_params = path_params_from_url(&request.url);
+        // Keep existing values for matching names, add new ones, remove stale ones.
+        let mut reconciled = Vec::new();
+        for url_param in url_params {
+            let existing = request.path_params.iter().find(|p| p.name == url_param.name);
+            reconciled.push(existing.cloned().unwrap_or(url_param));
+        }
+        request.path_params = reconciled;
+    }
+
+    /// Reads the URL input field and writes its value into `request.url`, so that
+    /// subsequent calls to `reconcile_path_params_from_url()` see the live URL.
+    pub(crate) fn sync_url_input_to_request(&mut self, cx: &Context<Self>) {
+        let url_input_value = self.url_input.read(cx).value();
+        let Some(request) = self.active_request_mut() else { return };
+        if request.url.as_ref() != url_input_value {
+            request.url = url_input_value.into();
+        }
+    }
+
+    pub(crate) fn sync_path_param_values_from_inputs(&mut self, cx: &mut Context<Self>) {
+        let Some(request_id) = self.active_request().map(|r| r.id) else {
+            return;
+        };
+        let request = self.active_request().cloned().unwrap();
+        let mut changed = false;
+        let mut updates = Vec::new();
+        for (index, param) in request.path_params.iter().enumerate() {
+            let value_key = format!("req:{request_id}:path:{index}:value");
+            if let Some(input) = self.field_inputs.get(&value_key) {
+                let value = input.read(cx).value();
+                if value != param.value {
+                    updates.push((index, value));
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            let Some(request) = self.active_request_mut() else { return };
+            for (index, value) in updates {
+                if let Some(param) = request.path_params.get_mut(index) {
+                    param.value = value.into();
                 }
             }
         }

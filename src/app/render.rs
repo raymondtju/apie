@@ -1253,6 +1253,26 @@ impl ApiClientApp {
     ) -> impl IntoElement {
         let typography = self.typography();
         let spacing = Spacing::app();
+        self.sync_url_input_to_request(cx);
+        self.reconcile_path_params_from_url();
+        // Update name field inputs when path params are re-keyed by URL changes
+        // (e.g. "{a}" deleted and "{abc}" typed — the old field input at index 0
+        // still shows "a", so we push the reconciled name into the TextInput).
+        if let Some(request) = self.active_request() {
+            let request_id = request.id;
+            for (index, param) in request.path_params.iter().enumerate() {
+                let name_key = format!("req:{request_id}:path:{index}:name");
+                if let Some(input) = self.field_inputs.get(&name_key) {
+                    let current = input.read(cx).value();
+                    if current != param.name.as_ref() {
+                        input.update(cx, |input, cx| {
+                            input.set_content(param.name.to_string(), cx);
+                        });
+                    }
+                }
+            }
+        }
+        self.sync_path_param_values_from_inputs(cx);
         let Some(request) = self.active_request().cloned() else {
             return ui::panel_surface(theme)
                 .flex_1()

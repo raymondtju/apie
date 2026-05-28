@@ -15,10 +15,10 @@ pub(crate) use crate::ui::{
 pub(crate) use apie as domain;
 pub(crate) use gpui::{
     AnyElement, App, ClipboardItem, Context, Corner, CursorStyle, Div, Entity, FocusHandle,
-    Focusable, InteractiveElement, KeyBinding, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, Render, ResizeEdge, ScrollHandle, SharedString,
-    StatefulInteractiveElement, Window, WindowControlArea, actions, anchored, deferred, div,
-    prelude::*, px, rgb,
+    Focusable, InteractiveElement, KeyBinding, ListAlignment, ListState, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, ResizeEdge, ScrollHandle,
+    SharedString, StatefulInteractiveElement, Window, WindowControlArea, actions, anchored,
+    deferred, div, list as gpui_list, prelude::*, px, rgb,
 };
 
 pub(crate) mod actions;
@@ -353,6 +353,13 @@ pub(crate) struct ApiClientApp {
     request_started_at: Option<Instant>,
     _request_timer: Option<gpui::Task<()>>,
     pub(crate) find_state: Option<FindState>,
+    stream_state: BTreeMap<usize, StreamState>,
+    stream_cancel: BTreeMap<usize, std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    stream_tasks: BTreeMap<usize, gpui::Task<()>>,
+    stream_msg_tasks: BTreeMap<usize, gpui::Task<()>>,
+    stream_expanded_messages: HashSet<(usize, usize)>,
+    stream_list_state: ListState,
+    stream_list_scrollbar: Entity<ui::ListScrollbar>,
 }
 
 pub(crate) struct FindState {
@@ -410,6 +417,8 @@ impl ApiClientApp {
             cx.new(|_| ui::VerticalScrollbar::new(response_scroll_handle.clone()));
         let response_horizontal_scrollbar =
             cx.new(|_| ui::HorizontalScrollbar::new(response_scroll_handle.clone()));
+        let stream_list_state = ListState::new(0, ListAlignment::Bottom, px(2048.));
+        let stream_list_scrollbar = cx.new(|_| ui::ListScrollbar::new(stream_list_state.clone()));
         let settings = load_app_settings(&settings_path).unwrap_or_default();
         let theme_mode = Self::theme_mode_from_settings(settings.clone(), cx);
         let mut app = Self {
@@ -470,6 +479,13 @@ impl ApiClientApp {
             expanded_collections,
             request_started_at: None,
             find_state: None,
+            stream_state: BTreeMap::new(),
+            stream_cancel: BTreeMap::new(),
+            stream_tasks: BTreeMap::new(),
+            stream_msg_tasks: BTreeMap::new(),
+            stream_expanded_messages: HashSet::new(),
+            stream_list_state,
+            stream_list_scrollbar,
         };
         app.refresh_workspaces_list();
         app

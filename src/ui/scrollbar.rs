@@ -2,8 +2,8 @@ use std::time::{Duration, Instant};
 
 use super::*;
 use gpui::{
-    Bounds, Context, CursorStyle, DragMoveEvent, Entity, InteractiveElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Point, Render, ScrollHandle,
+    Bounds, Context, CursorStyle, DragMoveEvent, Entity, InteractiveElement, ListState,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Point, Render, ScrollHandle,
     StatefulInteractiveElement, WeakEntity, Window, div, point, px,
 };
 
@@ -578,6 +578,226 @@ pub(crate) fn horizontal_scrollbar(
     scrollbar: &Entity<HorizontalScrollbar>,
 ) -> Entity<HorizontalScrollbar> {
     scrollbar.clone()
+}
+
+// -----------------------------------------------------------------------------
+// ListScrollbar — scrollbar driven by a GPUI ListState
+// -----------------------------------------------------------------------------
+
+pub(crate) struct ListScrollbar {
+    list_state: ListState,
+    thumb_color: Hsla,
+    thumb_hover_color: Hsla,
+    track_bounds: Option<Bounds<Pixels>>,
+    thumb_bounds: Option<Bounds<Pixels>>,
+    active_drag: Option<ScrollbarDrag>,
+}
+
+impl ListScrollbar {
+    pub(crate) fn new(list_state: ListState) -> Self {
+        Self {
+            list_state,
+            thumb_color: rgba(0x00000033).into(),
+            thumb_hover_color: rgba(0x00000066).into(),
+            track_bounds: None,
+            thumb_bounds: None,
+            active_drag: None,
+        }
+    }
+
+    pub(crate) fn set_colors(&mut self, thumb_color: Hsla, thumb_hover_color: Hsla) {
+        self.thumb_color = thumb_color;
+        self.thumb_hover_color = thumb_hover_color;
+    }
+
+    fn max_scroll(&self) -> Pixels {
+        self.list_state
+            .max_offset_for_scrollbar()
+            .height
+            .max(px(0.0))
+    }
+
+    fn scroll_offset(&self) -> Point<Pixels> {
+        self.list_state.scroll_px_offset_for_scrollbar()
+    }
+
+    fn geometry(&self) -> Option<ScrollbarGeometry> {
+        let track_bounds = self.track_bounds?;
+        let max_scroll = self.max_scroll();
+        let viewport_height = track_bounds.size.height;
+        if max_scroll <= px(0.0) || viewport_height <= px(0.0) {
+            return None;
+        }
+
+        let content_height = viewport_height + max_scroll;
+        let thumb_height = ((viewport_height / content_height) * viewport_height)
+            .max(MIN_THUMB_HEIGHT)
+            .min(viewport_height);
+        let thumb_travel = (viewport_height - thumb_height).max(px(1.0));
+        let scroll_fraction = (-self.scroll_offset().y / max_scroll).clamp(0.0, 1.0);
+        let thumb_top = track_bounds.top() + thumb_travel * scroll_fraction;
+        Some(ScrollbarGeometry {
+            track_bounds,
+            thumb_bounds: Bounds::new(
+                point(track_bounds.right() - THUMB_WIDTH - px(1.0), thumb_top),
+                gpui::size(THUMB_WIDTH, thumb_height),
+            ),
+            max_scroll,
+        })
+    }
+
+    fn set_thumb_top(&mut self, thumb_top: Pixels, geometry: ScrollbarGeometry) {
+        let thumb_travel =
+            (geometry.track_bounds.size.height - geometry.thumb_bounds.size.height).max(px(1.0));
+        let relative_thumb_top =
+            (thumb_top - geometry.track_bounds.top()).clamp(px(0.0), thumb_travel);
+        let scroll_fraction = relative_thumb_top / thumb_travel;
+        self.list_state
+            .set_offset_from_scrollbar(point(px(0.0), -geometry.max_scroll * scroll_fraction));
+    }
+
+    fn sync_bounds(&mut self, bounds: Vec<Bounds<Pixels>>, cx: &mut Context<Self>) {
+        let next_track = bounds.first().copied();
+        let changed = self.track_bounds != next_track;
+        self.track_bounds = next_track;
+        self.thumb_bounds = self.geometry().map(|geometry| geometry.thumb_bounds);
+        if changed {
+            cx.notify();
+        }
+    }
+
+    fn start_thumb_drag(&mut self, event: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(geometry) = self.geometry() else {
+            return;
+        };
+        let cursor_thumb_offset = (event.position.y - geometry.thumb_bounds.top())
+            .clamp(px(0.0), geometry.thumb_bounds.size.height);
+        self.active_drag = Some(ScrollbarDrag {
+            cursor_thumb_offset,
+        });
+        self.thumb_bounds = Some(geometry.thumb_bounds);
+        self.list_state.scrollbar_drag_started();
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn jump_to_track_position(
+        &mut self,
+        event: &MouseDownEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(geometry) = self.geometry() else {
+            return;
+        };
+        let target_thumb_top = event.position.y - geometry.thumb_bounds.size.height / 2.0;
+        self.set_thumb_top(target_thumb_top, geometry);
+        self.thumb_bounds = self.geometry().map(|geometry| geometry.thumb_bounds);
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn update_drag(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.apply_drag(event.position, event.dragging(), cx);
+    }
+
+    fn apply_drag(&mut self, position: Point<Pixels>, dragging: bool, cx: &mut Context<Self>) {
+        let Some(drag) = self.active_drag else {
+            return;
+        };
+        if !dragging {
+            self.active_drag = None;
+            self.list_state.scrollbar_drag_ended();
+            cx.notify();
+            return;
+        }
+        let Some(geometry) = self.geometry() else {
+            return;
+        };
+        self.set_thumb_top(position.y - drag.cursor_thumb_offset, geometry);
+        self.thumb_bounds = self.geometry().map(|geometry| geometry.thumb_bounds);
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn update_drag_move(
+        &mut self,
+        event: &DragMoveEvent<ScrollbarDragToken>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_drag(event.event.position, event.event.dragging(), cx);
+    }
+
+    fn finish_drag(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.active_drag.is_some() {
+            self.active_drag = None;
+            self.list_state.scrollbar_drag_ended();
+            cx.stop_propagation();
+            cx.notify();
+        }
+    }
+}
+
+impl Render for ListScrollbar {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let geometry = self.geometry();
+        let thumb_bounds = geometry.map(|geometry| geometry.thumb_bounds);
+        self.thumb_bounds = thumb_bounds;
+        let scrollbar = cx.weak_entity();
+
+        div()
+            .absolute()
+            .top_0()
+            .right_0()
+            .bottom_0()
+            .w(SCROLLBAR_WIDTH)
+            .block_mouse_except_scroll()
+            .on_children_prepainted(move |bounds, _, cx| {
+                let _ = scrollbar.update(cx, |scrollbar, cx| {
+                    scrollbar.sync_bounds(bounds, cx);
+                });
+            })
+            .on_mouse_move(cx.listener(Self::update_drag))
+            .on_drag_move::<ScrollbarDragToken>(cx.listener(Self::update_drag_move))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::finish_drag))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::finish_drag))
+            .child(
+                div()
+                    .id("list-scrollbar-track")
+                    .debug_selector(|| "list-scrollbar-track".into())
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .bottom_0()
+                    .w(SCROLLBAR_WIDTH)
+                    .block_mouse_except_scroll()
+                    .on_mouse_down(MouseButton::Left, cx.listener(Self::jump_to_track_position)),
+            )
+            .when_some(thumb_bounds, |this, thumb_bounds| {
+                this.child(
+                    div()
+                        .id("list-scrollbar-thumb")
+                        .debug_selector(|| "list-scrollbar-thumb".into())
+                        .absolute()
+                        .top(thumb_bounds.top() - self.track_bounds.unwrap().top())
+                        .right(px(1.0))
+                        .w(THUMB_WIDTH)
+                        .h(thumb_bounds.size.height)
+                        .rounded(px(3.0))
+                        .bg(self.thumb_color)
+                        .cursor(CursorStyle::PointingHand)
+                        .hover({
+                            let thumb_hover_color = self.thumb_hover_color;
+                            move |this| this.bg(thumb_hover_color)
+                        })
+                        .on_mouse_down(MouseButton::Left, cx.listener(Self::start_thumb_drag))
+                        .on_drag(ScrollbarDragToken, |_, _, _, cx| {
+                            cx.new(|_| ScrollbarDragGhost)
+                        }),
+                )
+            })
+    }
 }
 
 #[cfg(test)]

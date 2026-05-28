@@ -2517,3 +2517,41 @@ fn find_in_response_body(cx: &mut TestAppContext) {
         assert!(input.read(cx).search_highlights.is_empty());
     });
 }
+
+#[test]
+fn test_stream_state_initialization() {
+    let state = StreamState::new();
+    assert_eq!(state.status, StreamStatus::Disconnected);
+    assert!(state.messages.is_empty());
+    assert!(state.error.is_none());
+}
+
+#[test]
+fn test_stream_message_from_domain() {
+    let domain_msg = domain::StreamMessage {
+        direction: domain::StreamDirection::Received,
+        event_type: Some("message".to_string()),
+        event_id: Some("123".to_string()),
+        data: "test data".to_string(),
+        size_bytes: 9,
+        timestamp_ms: 1000,
+        received_at: 1700000000000,
+    };
+
+    let app_msg = StreamMessage::from_domain(domain_msg);
+    assert_eq!(app_msg.direction, domain::StreamDirection::Received);
+    assert_eq!(app_msg.event_type, Some("message".into()));
+    assert_eq!(app_msg.event_id, Some("123".into()));
+    assert_eq!(app_msg.data.as_ref(), "test data");
+    assert_eq!(app_msg.size_bytes, 9);
+    assert_eq!(app_msg.timestamp_ms, 1000);
+    assert_eq!(app_msg.received_at, 1700000000000);
+}
+
+#[test]
+fn test_response_panel_includes_stream() {
+    assert_eq!(ResponsePanel::Stream, ResponsePanel::Stream);
+    assert_ne!(ResponsePanel::Stream, ResponsePanel::Body);
+    assert_ne!(ResponsePanel::Stream, ResponsePanel::Headers);
+    assert_ne!(ResponsePanel::Stream, ResponsePanel::Cookies);
+}

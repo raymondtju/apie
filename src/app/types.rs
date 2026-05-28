@@ -377,6 +377,68 @@ pub(crate) enum ResponsePanel {
     Body,
     Headers,
     Cookies,
+    Stream,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StreamStatus {
+    Disconnected,
+    Connecting,
+    Connected,
+}
+
+pub(crate) const MAX_STREAM_MESSAGES: usize = 5000;
+pub(crate) const MAX_CONCURRENT_STREAMS: usize = 5;
+
+#[derive(Clone)]
+pub(crate) struct StreamMessage {
+    pub(crate) direction: domain::StreamDirection,
+    pub(crate) event_type: Option<SharedString>,
+    pub(crate) event_id: Option<SharedString>,
+    pub(crate) data: SharedString,
+    pub(crate) size_bytes: usize,
+    pub(crate) timestamp_ms: u64,
+    pub(crate) received_at: u64,
+    pub(crate) is_json: bool,
+}
+
+impl StreamMessage {
+    pub(crate) fn from_domain(msg: domain::StreamMessage) -> Self {
+        let is_json = serde_json::from_str::<serde_json::Value>(&msg.data).is_ok();
+        Self {
+            direction: msg.direction,
+            event_type: msg.event_type.map(Into::into),
+            event_id: msg.event_id.map(Into::into),
+            data: msg.data.into(),
+            size_bytes: msg.size_bytes,
+            timestamp_ms: msg.timestamp_ms,
+            received_at: msg.received_at,
+            is_json,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct StreamState {
+    pub(crate) status: StreamStatus,
+    pub(crate) messages: Vec<StreamMessage>,
+    pub(crate) error: Option<SharedString>,
+    /// Wall-clock Unix epoch millis when the stream request was initiated.
+    pub(crate) started_at: Option<u64>,
+    /// Wall-clock Unix epoch millis of the most recently received message.
+    pub(crate) last_received_at: Option<u64>,
+}
+
+impl StreamState {
+    pub(crate) fn new() -> Self {
+        Self {
+            status: StreamStatus::Disconnected,
+            messages: Vec::new(),
+            error: None,
+            started_at: None,
+            last_received_at: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

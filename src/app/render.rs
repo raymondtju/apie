@@ -1970,6 +1970,13 @@ impl ApiClientApp {
                                 ResponsePanel::Cookies,
                                 theme,
                                 cx,
+                            ))
+                            .child(Self::response_tab_button(
+                                "Stream",
+                                self.active_response_panel == ResponsePanel::Stream,
+                                ResponsePanel::Stream,
+                                theme,
+                                cx,
                             )),
                     )
                     .child(
@@ -2158,6 +2165,9 @@ impl ApiClientApp {
                     theme,
                     cx,
                 ),
+                (ResponsePanel::Stream, _) => {
+                    self.render_response_stream(active_request_id.unwrap_or_default(), theme, cx)
+                }
                 (_, None) if self.is_active_request_in_flight() => {
                     self.render_response_loading(theme, cx)
                 }
@@ -4190,6 +4200,276 @@ impl ApiClientApp {
                     .child(ui::label(label, theme).text_ui(typography))
                     .child(ui::muted_label(value, theme).text_ui_sm(typography)),
             )
+    }
+
+    fn render_response_stream(
+        &mut self,
+        request_id: usize,
+        theme: AppTheme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let spacing = Spacing::app();
+        let typography = self.typography();
+
+        let stream_state = self
+            .stream_state
+            .get(&request_id)
+            .cloned()
+            .unwrap_or_else(StreamState::new);
+
+        let status_text = match stream_state.status {
+            StreamStatus::Disconnected => "Disconnected",
+            StreamStatus::Connecting => "Connecting…",
+            StreamStatus::Connected => "Connected",
+        };
+
+        let status_color = match stream_state.status {
+            StreamStatus::Disconnected => theme.text_muted,
+            StreamStatus::Connecting => theme.warning,
+            StreamStatus::Connected => theme.success,
+        };
+
+        let list_state = self.stream_list_state.clone();
+
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .bg(theme.surface_background)
+            // Status header
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px(spacing.base12())
+                    .py(spacing.base08())
+                    .border_b_1()
+                    .border_color(theme.border_variant)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(spacing.base08())
+                            .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(status_color))
+                            .child(
+                                div()
+                                    .text_color(status_color)
+                                    .text_ui_sm(typography)
+                                    .child(status_text),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(spacing.base08())
+                            .when(stream_state.status == StreamStatus::Disconnected, |this| {
+                                this.child(
+                                    ui::button_base(
+                                        "stream-connect",
+                                        "Connect",
+                                        false,
+                                        ButtonStyle::Tinted(ui::TintColor::Accent),
+                                        theme,
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, event, window, cx| {
+                                            this.start_stream(event, window, cx);
+                                        },
+                                    )),
+                                )
+                            })
+                            .when(
+                                stream_state.status == StreamStatus::Connected
+                                    || stream_state.status == StreamStatus::Connecting,
+                                |this| {
+                                    this.child(
+                                        ui::button_base(
+                                            "stream-disconnect",
+                                            "Disconnect",
+                                            false,
+                                            ButtonStyle::Tinted(ui::TintColor::Error),
+                                            theme,
+                                        )
+                                        .on_click(
+                                            cx.listener(|this, event, window, cx| {
+                                                this.stop_stream(event, window, cx);
+                                            }),
+                                        ),
+                                    )
+                                },
+                            ),
+                    ),
+            )
+            // Error message
+            .when_some(stream_state.error.as_ref(), |this, error| {
+                this.child(
+                    div()
+                        .px(spacing.base12())
+                        .py(spacing.base08())
+                        .text_color(theme.error)
+                        .text_ui_sm(typography)
+                        .child(format!("Error: {}", error)),
+                )
+            })
+            // Message list — only visible items are rendered by GPUI
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        gpui_list(list_state, cx.processor(Self::render_stream_message))
+                            .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
+                            .size_full(),
+                    )
+                    .child({
+                        self.stream_list_scrollbar.update(cx, |scrollbar, _cx| {
+                            scrollbar.set_colors(theme.border_variant, theme.text_muted);
+                        });
+                        self.stream_list_scrollbar.clone()
+                    }),
+            )
+            .into_any_element()
+    }
+
+    fn render_stream_message(
+        &mut self,
+        msg_idx: usize,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = AppTheme::for_mode(self.theme_mode);
+        let spacing = Spacing::app();
+        let typography = self.typography();
+        let request_id = self.active_request_id.unwrap_or(0);
+
+        let Some(state) = self.stream_state.get(&request_id) else {
+            return div().into_any_element();
+        };
+        let Some(msg) = state.messages.get(msg_idx) else {
+            return div().into_any_element();
+        };
+
+        let is_expanded = self
+            .stream_expanded_messages
+            .contains(&(request_id, msg_idx));
+        let lines_count = msg.data.split('\n').count();
+        let is_large = lines_count > 1 || msg.data.len() > 120;
+
+        fn format_wall_clock_time(timestamp_ms: u64) -> Option<SharedString> {
+            let secs = timestamp_ms / 1000;
+            if secs > 0 {
+                let hours = (secs / 3600) % 24;
+                let minutes = (secs / 60) % 60;
+                let seconds = secs % 60;
+                Some(format!("{:02}:{:02}:{:02}", hours, minutes, seconds).into())
+            } else {
+                None
+            }
+        }
+
+        let time_str = format_wall_clock_time(msg.received_at);
+        let dir_arrow = match msg.direction {
+            domain::StreamDirection::Sent => "↑",
+            domain::StreamDirection::Received => "↓",
+        };
+        let header_chevron = if is_large {
+            if is_expanded { "▼ " } else { "▶ " }
+        } else {
+            ""
+        };
+        let timestamp_label = match &time_str {
+            Some(t) => format!("{}[{}] {}", header_chevron, t, dir_arrow),
+            None => format!("{}[00:00:00] {}", header_chevron, dir_arrow),
+        };
+
+        let formatted_data: SharedString = if msg.is_json {
+            serde_json::to_string_pretty(&msg.data)
+                .unwrap_or(msg.data.to_string())
+                .into()
+        } else {
+            msg.data.clone()
+        };
+
+        let display_data: SharedString = if is_large && !is_expanded {
+            let first_line = msg.data.lines().next().unwrap_or("").trim_end();
+            let truncated = if first_line.len() > 120 {
+                format!("{}...", &first_line[..120])
+            } else if lines_count > 1 {
+                format!("{}...", first_line)
+            } else {
+                first_line.to_string()
+            };
+            truncated.into()
+        } else {
+            formatted_data.clone()
+        };
+
+        let msg_data_for_copy = formatted_data;
+        let toggle_key = (request_id, msg_idx);
+
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .id(("stream-header", msg_idx))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px(spacing.base12())
+                    .py(spacing.base04())
+                    .border_b_1()
+                    .border_color(theme.border_variant)
+                    .text_color(theme.text_muted)
+                    .text_ui_sm(typography)
+                    .when(is_large, |this| {
+                        this.cursor_pointer()
+                            .hover(|style| style.bg(theme.element_hover))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if this.stream_expanded_messages.contains(&toggle_key) {
+                                    this.stream_expanded_messages.remove(&toggle_key);
+                                } else {
+                                    this.stream_expanded_messages.insert(toggle_key);
+                                }
+                                // Force remeasurement of this item's height.
+                                this.stream_list_state.splice(msg_idx..msg_idx + 1, 1);
+                                cx.notify();
+                            }))
+                    })
+                    .child(timestamp_label)
+                    .child(
+                        ui::icon_button_base(
+                            ("stream-msg-copy", msg_idx),
+                            IconName::Copy,
+                            false,
+                            theme,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                msg_data_for_copy.to_string(),
+                            ));
+                            this.status_line = "Copied stream message.".into();
+                            cx.notify();
+                        })),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w_full()
+                    .bg(theme.editor_background)
+                    .p(spacing.base08())
+                    .font_family(ui::JETBRAINS_FONT_FAMILY)
+                    .text_buffer(typography)
+                    .text_color(theme.editor_text)
+                    .whitespace_normal()
+                    .child(display_data),
+            )
+            .into_any_element()
     }
 }
 

@@ -458,4 +458,195 @@ impl ApiClientApp {
             .map(|id| self.in_flight_requests.contains_key(&id))
             .unwrap_or(false)
     }
+
+    pub(crate) fn start_stream(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(request_id) = self.active_request_id else {
+            return;
+        };
+        let Some(request) = self.workspace.request_by_id(request_id) else {
+            return;
+        };
+        let url = request.url.to_string();
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            self.status_line = "Invalid URL for streaming".into();
+            cx.notify();
+            return;
+        }
+
+        // Enforce a global cap on concurrent streams.
+        let active_count = self
+            .stream_state
+            .values()
+            .filter(|s| s.status == StreamStatus::Connected || s.status == StreamStatus::Connecting)
+            .count();
+        let already_active = self.stream_state.get(&request_id).is_some_and(|s| {
+            s.status == StreamStatus::Connected || s.status == StreamStatus::Connecting
+        });
+        if !already_active && active_count >= MAX_CONCURRENT_STREAMS {
+            self.status_line = format!("Max {MAX_CONCURRENT_STREAMS} concurrent streams").into();
+            cx.notify();
+            return;
+        }
+
+        // Cancel any existing stream for this request.
+        if let Some(cancel) = self.stream_cancel.remove(&request_id) {
+            cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        if let Some(_task) = self.stream_tasks.remove(&request_id) {
+            // Task will be dropped and cancelled
+        }
+
+        let stream_state = self
+            .stream_state
+            .entry(request_id)
+            .or_insert_with(StreamState::new);
+        if stream_state.status == StreamStatus::Connected
+            || stream_state.status == StreamStatus::Connecting
+        {
+            return;
+        }
+        stream_state.status = StreamStatus::Connecting;
+        stream_state.messages.clear();
+        self.stream_expanded_messages
+            .retain(|(req_id, _)| *req_id != request_id);
+        self.stream_list_state.reset(0);
+        stream_state.error = None;
+        stream_state.started_at = Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+        );
+        stream_state.last_received_at = None;
+
+        let (message_tx, mut message_rx) =
+            tokio::sync::mpsc::channel::<domain::StreamMessage>(1000);
+        let cancel_token = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.stream_cancel.insert(request_id, cancel_token.clone());
+
+        let stream_task = cx.spawn(async move |this, cx| {
+            let connect_result = cx
+                .background_executor()
+                .spawn(async move { domain::connect_sse(url, message_tx, cancel_token) })
+                .await;
+
+            if let Err(e) = connect_result {
+                let _ = this.update(cx, |app, cx| {
+                    if let Some(state) = app.stream_state.get_mut(&request_id) {
+                        state.status = StreamStatus::Disconnected;
+                        state.error = Some(e.to_string().into());
+                    }
+                    app.status_line = format!("Stream error: {e}").into();
+                    cx.notify();
+                });
+            } else {
+                let _ = this.update(cx, |app, cx| {
+                    if let Some(state) = app.stream_state.get_mut(&request_id) {
+                        state.status = StreamStatus::Disconnected;
+                    }
+                    app.status_line = "Stream disconnected".into();
+                    cx.notify();
+                });
+            }
+        });
+        self.stream_tasks.insert(request_id, stream_task);
+
+        // Process incoming messages in batches.
+        // Wait for the first message, then drain all accumulated messages
+        // and trigger a single cx.notify() per batch. This caps re-renders
+        // at ~60fps even when SSE events arrive much faster.
+        // Remove any existing message task before spawning a new one (dropping the task cancels it).
+        self.stream_msg_tasks.remove(&request_id);
+        let msg_task = cx.spawn(async move |this, cx| {
+            loop {
+                // Block until at least one message arrives.
+                let first = match message_rx.recv().await {
+                    Some(msg) => msg,
+                    None => break, // Channel closed.
+                };
+
+                // Drain any additional messages that arrived in the meantime.
+                let mut batch = vec![first];
+                while let Ok(msg) = message_rx.try_recv() {
+                    batch.push(msg);
+                }
+
+                let _ = this.update(cx, |app, cx| {
+                    if let Some(state) = app.stream_state.get_mut(&request_id) {
+                        if state.status == StreamStatus::Connecting {
+                            state.status = StreamStatus::Connected;
+                        }
+                        let old_count = state.messages.len();
+                        let mut count = 0usize;
+                        for msg in batch {
+                            let app_msg = StreamMessage::from_domain(msg);
+                            // Skip the zero-data handshake message from connect_sse.
+                            if !app_msg.data.is_empty() {
+                                state.last_received_at = Some(app_msg.received_at);
+                                state.messages.push(app_msg);
+                                count += 1;
+                            }
+                        }
+                        if count > 0 {
+                            app.stream_list_state.splice(old_count..old_count, count);
+                        }
+                        // Evict oldest messages when the cap is exceeded.
+                        let len = state.messages.len();
+                        if len > MAX_STREAM_MESSAGES {
+                            let excess = len - MAX_STREAM_MESSAGES;
+                            state.messages.drain(0..excess);
+                            // Shift expanded-message indices down and drop stale entries.
+                            let old = std::mem::take(&mut app.stream_expanded_messages);
+                            for (req_id, idx) in old {
+                                if req_id == request_id {
+                                    if idx >= excess {
+                                        app.stream_expanded_messages.insert((req_id, idx - excess));
+                                    }
+                                } else {
+                                    app.stream_expanded_messages.insert((req_id, idx));
+                                }
+                            }
+                            app.stream_list_state.reset(state.messages.len());
+                        }
+                        if count > 0 {
+                            cx.notify();
+                        }
+                    }
+                });
+            }
+        });
+        self.stream_msg_tasks.insert(request_id, msg_task);
+
+        self.status_line = "Connecting to stream…".into();
+        cx.notify();
+    }
+
+    pub(crate) fn stop_stream(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(request_id) = self.active_request_id else {
+            return;
+        };
+        if let Some(cancel) = self.stream_cancel.remove(&request_id) {
+            cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        if let Some(_task) = self.stream_tasks.remove(&request_id) {
+            // Task will be dropped and cancelled
+        }
+        if let Some(state) = self.stream_state.get_mut(&request_id) {
+            state.status = StreamStatus::Disconnected;
+            state.started_at = None;
+            state.last_received_at = None;
+        }
+        self.status_line = "Stream stopped".into();
+        cx.notify();
+    }
 }

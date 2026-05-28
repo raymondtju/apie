@@ -1,20 +1,29 @@
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::client::conn::http1::handshake;
 use hyper_util::rt::TokioIo;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::runtime::Builder as RuntimeBuilder;
+use tokio::sync::mpsc;
 use tokio_rustls::TlsConnector;
 use url::Url;
 
-use crate::domain::{Body, ClientError, Header, Request, ResponseRecord, ResponseTiming, Result};
+use crate::domain::{
+    Body, ClientError, Header, Request, ResponseRecord, ResponseTiming, Result, StreamDirection,
+    StreamMessage,
+};
 
 trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin> AsyncReadWrite for T {}
+
+trait RawIo: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> RawIo for T {}
 
 type HyperBody = Full<Bytes>;
 
@@ -235,4 +244,236 @@ async fn send_single(
     };
 
     Ok((body_str, status_code, status_text, headers, cookies, timing))
+}
+
+pub fn connect_sse(
+    url: String,
+    message_tx: mpsc::Sender<StreamMessage>,
+    cancel_token: Arc<AtomicBool>,
+) -> Result<()> {
+    let rt = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| ClientError::InvalidResponse(e.to_string()))?;
+    rt.block_on(connect_sse_async(url, message_tx, cancel_token))
+}
+
+/// Connect to an SSE stream and read events, with automatic reconnection.
+/// The server may close the connection after periods of inactivity (common for SSE).
+/// This function automatically reconnects so the caller never sees a disconnect.
+/// Only returns when the user cancels via `cancel_token`, or on a non-recoverable error.
+async fn connect_sse_async(
+    url: String,
+    message_tx: mpsc::Sender<StreamMessage>,
+    cancel_token: Arc<AtomicBool>,
+) -> Result<()> {
+    let parsed_url =
+        Url::parse(&url).map_err(|e| ClientError::InvalidResponse(format!("Invalid URL: {e}")))?;
+
+    let host = parsed_url
+        .host_str()
+        .ok_or_else(|| ClientError::InvalidResponse("URL has no host".into()))?;
+    let port = parsed_url
+        .port_or_known_default()
+        .ok_or_else(|| ClientError::InvalidResponse("URL has no known port".into()))?;
+    let is_https = parsed_url.scheme() == "https";
+    let path = parsed_url.path();
+    let query_str = parsed_url.query().unwrap_or("");
+
+    let has_sent_first_message = std::sync::atomic::AtomicBool::new(false);
+
+    // Outer loop: reconnect automatically when the server closes the connection.
+    while !cancel_token.load(Ordering::SeqCst) {
+        // Connect (TCP + optional TLS)
+        let connect_result = TcpStream::connect((host, port)).await;
+        let stream = match connect_result {
+            Ok(s) => s,
+            Err(_) => {
+                // Brief delay before retry to avoid busy-looping on network errors.
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+
+        let mut io: Box<dyn RawIo> = if is_https {
+            use rustls::ClientConfig;
+            use rustls_pki_types::ServerName;
+
+            let dns_name = match ServerName::try_from(host.to_string()) {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            let root_store =
+                rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            let config = ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth();
+            let connector = TlsConnector::from(Arc::new(config));
+            match connector.connect(dns_name, stream).await {
+                Ok(tls) => Box::new(tls) as Box<dyn RawIo>,
+                Err(_) => {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    continue;
+                }
+            }
+        } else {
+            Box::new(stream) as Box<dyn RawIo>
+        };
+
+        // Send HTTP request
+        let request_line = format!(
+            "GET {}{} HTTP/1.1\r\nHost: {}\r\nAccept: text/event-stream\r\nUser-Agent: apie-stream-client\r\nConnection: keep-alive\r\n\r\n",
+            path,
+            if query_str.is_empty() { "" } else { "?" },
+            host
+        );
+        if io.write_all(request_line.as_bytes()).await.is_err() {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            continue;
+        }
+
+        // Read response headers
+        let mut response_buf: Vec<u8> = Vec::new();
+        let mut header_read_ok = false;
+        loop {
+            let mut buf = [0u8; 4096];
+            let n = match tokio::time::timeout(std::time::Duration::from_secs(5), io.read(&mut buf))
+                .await
+            {
+                Ok(Ok(0)) => break,
+                Ok(Ok(n)) => n,
+                _ => break,
+            };
+            response_buf.extend_from_slice(&buf[..n]);
+            if response_buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                header_read_ok = true;
+                break;
+            }
+        }
+        if !header_read_ok {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            continue;
+        }
+
+        let response_str = String::from_utf8_lossy(&response_buf);
+        let status_line = response_str.lines().next().unwrap_or("");
+        let status_code_str = status_line.split_whitespace().nth(1).unwrap_or("");
+        let status_code: u16 = match status_code_str.parse() {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        if status_code != 200 {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            continue;
+        }
+
+        // Body offset
+        let body_offset = response_str
+            .find("\r\n\r\n")
+            .map(|i| i + 4)
+            .unwrap_or(response_str.len());
+        let mut buffer = String::new();
+        if body_offset < response_str.len() {
+            buffer.push_str(&response_str[body_offset..]);
+        }
+
+        // Send a fake first message only once (not on every reconnect).
+        if !has_sent_first_message.load(Ordering::SeqCst) {
+            has_sent_first_message.store(true, Ordering::SeqCst);
+            let _ = message_tx
+                .send(StreamMessage {
+                    direction: StreamDirection::Received,
+                    event_type: None,
+                    event_id: None,
+                    data: String::new(),
+                    size_bytes: 0,
+                    timestamp_ms: 0,
+                    received_at: 0,
+                })
+                .await;
+        }
+
+        // Inner loop: read SSE body from the stream.
+        // When the server closes the connection (read returns 0),
+        // we break back to the outer loop to reconnect.
+        let start_time = Instant::now();
+        loop {
+            if cancel_token.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+
+            let mut buf = [0u8; 8192];
+            let n = tokio::time::timeout(std::time::Duration::from_millis(100), io.read(&mut buf))
+                .await;
+
+            match n {
+                Ok(Ok(0)) => {
+                    // Stream closed by server — reconnect in outer loop.
+                    break;
+                }
+                Ok(Ok(n)) => {
+                    let chunk_str = String::from_utf8_lossy(&buf[..n]);
+                    buffer.push_str(&chunk_str);
+
+                    while let Some(event_end) = buffer.find("\n\n") {
+                        let event_data = buffer[..event_end].to_string();
+                        buffer = buffer[event_end + 2..].to_string();
+
+                        if let Ok(message) = parse_sse_event(&event_data, start_time) {
+                            if message_tx.send(message).await.is_err() {
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    // Read error — retry connection after brief delay.
+                    return Err(ClientError::InvalidResponse(format!("Stream error: {e}")));
+                }
+                Err(_) => {
+                    // Timeout — no data yet, but connection is still alive.
+                    continue;
+                }
+            }
+        }
+
+        // Brief delay before reconnecting to avoid hammering the server.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    Ok(())
+}
+
+pub fn parse_sse_event(event_data: &str, start_time: Instant) -> Result<StreamMessage> {
+    let mut event_type = None;
+    let mut event_id = None;
+    let mut data_lines = Vec::new();
+
+    for line in event_data.lines() {
+        if let Some(rest) = line.strip_prefix("event:") {
+            event_type = Some(rest.trim().to_string());
+        } else if let Some(rest) = line.strip_prefix("id:") {
+            event_id = Some(rest.trim().to_string());
+        } else if let Some(rest) = line.strip_prefix("data:") {
+            data_lines.push(rest.trim().to_string());
+        }
+    }
+
+    let data = data_lines.join("\n");
+    let size_bytes = data.len();
+    let timestamp_ms = start_time.elapsed().as_millis() as u64;
+    let received_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    Ok(StreamMessage {
+        direction: StreamDirection::Received,
+        event_type,
+        event_id,
+        data,
+        size_bytes,
+        timestamp_ms,
+        received_at,
+    })
 }

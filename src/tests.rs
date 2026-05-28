@@ -127,3 +127,52 @@ fn sends_options_http_request() {
     assert_eq!(response.status, 204);
     assert_eq!(response.status_text, "No Content");
 }
+
+#[test]
+fn parses_sse_event_with_data() {
+    use std::time::Instant;
+    let start_time = Instant::now();
+    let event_data = "data: {\"message\":\"hello\"}";
+    let message = parse_sse_event(event_data, start_time).unwrap();
+    assert_eq!(message.data, "{\"message\":\"hello\"}");
+    assert_eq!(message.direction, StreamDirection::Received);
+    assert!(message.event_type.is_none());
+    assert!(message.event_id.is_none());
+}
+
+#[test]
+fn parses_sse_event_with_event_type_and_id() {
+    use std::time::Instant;
+    let start_time = Instant::now();
+    let event_data = "event: update\nid: 123\ndata: value";
+    let message = parse_sse_event(event_data, start_time).unwrap();
+    assert_eq!(message.data, "value");
+    assert_eq!(message.event_type, Some("update".to_string()));
+    assert_eq!(message.event_id, Some("123".to_string()));
+}
+
+#[test]
+fn parses_sse_multiline_data() {
+    use std::time::Instant;
+    let start_time = Instant::now();
+    let event_data = "data: line1\ndata: line2\ndata: line3";
+    let message = parse_sse_event(event_data, start_time).unwrap();
+    assert_eq!(message.data, "line1\nline2\nline3");
+}
+
+#[test]
+fn stream_message_fields() {
+    let msg = StreamMessage {
+        direction: StreamDirection::Received,
+        event_type: Some("test".to_string()),
+        event_id: Some("id-1".to_string()),
+        data: "payload".to_string(),
+        size_bytes: 7,
+        timestamp_ms: 1000,
+        received_at: 0,
+    };
+    assert_eq!(msg.direction, StreamDirection::Received);
+    assert_eq!(msg.event_type.as_deref(), Some("test"));
+    assert_eq!(msg.data, "payload");
+    assert_eq!(msg.size_bytes, 7);
+}

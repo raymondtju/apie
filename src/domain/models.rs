@@ -205,3 +205,35 @@ impl Request {
         }
     }
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StreamDirection {
+    Sent,
+    Received,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StreamMessage {
+    pub direction: StreamDirection,
+    pub event_type: Option<String>,
+    pub event_id: Option<String>,
+    pub data: String,
+    pub size_bytes: usize,
+    pub timestamp_ms: u64,
+    /// Wall-clock time when the event was received, in Unix epoch milliseconds.
+    pub received_at: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct StreamSession {
+    pub url: String,
+    pub protocol: StreamProtocol,
+    pub connected_at_ms: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StreamProtocol {
+    SSE,
+    WebSocket,
+}

@@ -455,6 +455,11 @@ impl ApiClientApp {
             response: None,
             history: vec![],
             response_pinned: false,
+            description: None,
+            summary: None,
+            operation_id: None,
+            tags: vec![],
+            deprecated: false,
         }
     }
 

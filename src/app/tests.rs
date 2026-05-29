@@ -32,6 +32,11 @@ fn resolves_environment_params_headers_auth_and_body_before_send() {
         response: None,
         history: vec![],
         response_pinned: false,
+        description: None,
+        summary: None,
+        operation_id: None,
+        tags: vec![],
+        deprecated: false,
     };
 
     let resolved = request.to_resolved_domain(&environment).unwrap();
@@ -67,6 +72,11 @@ fn body_is_only_emitted_for_body_methods() {
         response: None,
         history: vec![],
         response_pinned: false,
+        description: None,
+        summary: None,
+        operation_id: None,
+        tags: vec![],
+        deprecated: false,
     };
 
     assert!(matches!(request.to_domain().body, domain::Body::Empty));
@@ -99,6 +109,11 @@ fn blank_editable_rows_are_not_sent() {
         response: None,
         history: vec![],
         response_pinned: false,
+        description: None,
+        summary: None,
+        operation_id: None,
+        tags: vec![],
+        deprecated: false,
     };
 
     let domain_request = request.to_domain();
@@ -220,6 +235,11 @@ fn test_request(id: usize) -> Request {
         response: None,
         history: vec![],
         response_pinned: false,
+        description: None,
+        summary: None,
+        operation_id: None,
+        tags: vec![],
+        deprecated: false,
     }
 }
 

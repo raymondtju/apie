@@ -115,6 +115,18 @@ pub struct Request {
     pub body: Body,
     pub proxy_url: Option<String>,
     pub history: Vec<ResponseRecord>,
+    #[serde(default)]
+    pub path_params: Vec<Header>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub operation_id: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub deprecated: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,6 +214,12 @@ impl Request {
             body: Body::Empty,
             proxy_url: None,
             history: Vec::new(),
+            path_params: Vec::new(),
+            description: None,
+            summary: None,
+            operation_id: None,
+            tags: Vec::new(),
+            deprecated: false,
         }
     }
 }

@@ -237,6 +237,11 @@ pub(crate) struct Request {
     /// disk. By default response bodies are session-only to keep the
     /// workspace JSON small and writes off the UI thread fast.
     pub(crate) response_pinned: bool,
+    pub(crate) description: Option<SharedString>,
+    pub(crate) summary: Option<SharedString>,
+    pub(crate) operation_id: Option<SharedString>,
+    pub(crate) tags: Vec<SharedString>,
+    pub(crate) deprecated: bool,
 }
 
 #[derive(Clone)]
@@ -1338,7 +1343,11 @@ impl Request {
             method: Method::from_domain(request.method),
             url: request.url.clone().into(),
             query: request.query.into_iter().map(Header::from_domain).collect(),
-            path_params: vec![],
+            path_params: request
+                .path_params
+                .into_iter()
+                .map(Header::from_domain)
+                .collect(),
             proxy_url: request.proxy_url.map(Into::into),
             auth: Auth::from_domain(request.auth),
             headers: request
@@ -1351,6 +1360,11 @@ impl Request {
             response,
             history,
             response_pinned: false,
+            description: request.description.map(Into::into),
+            summary: request.summary.map(Into::into),
+            operation_id: request.operation_id.map(Into::into),
+            tags: request.tags.into_iter().map(Into::into).collect(),
+            deprecated: request.deprecated,
         }
     }
 
@@ -1405,6 +1419,12 @@ impl Request {
                 value: self.body.to_string(),
             }
         };
+        request.path_params = self.path_params.iter().map(Header::to_domain).collect();
+        request.description = self.description.as_ref().map(|s| s.to_string());
+        request.summary = self.summary.as_ref().map(|s| s.to_string());
+        request.operation_id = self.operation_id.as_ref().map(|s| s.to_string());
+        request.tags = self.tags.iter().map(|s| s.to_string()).collect();
+        request.deprecated = self.deprecated;
         request
     }
 

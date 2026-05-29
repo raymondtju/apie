@@ -472,7 +472,8 @@ impl ApiClientApp {
             return;
         };
         let url = request.url.to_string();
-        if !url.starts_with("http://") && !url.starts_with("https://") {
+        let is_websocket = url.starts_with("ws://") || url.starts_with("wss://");
+        if !url.starts_with("http://") && !url.starts_with("https://") && !is_websocket {
             self.status_line = "Invalid URL for streaming".into();
             cx.notify();
             return;
@@ -532,7 +533,13 @@ impl ApiClientApp {
         let stream_task = cx.spawn(async move |this, cx| {
             let connect_result = cx
                 .background_executor()
-                .spawn(async move { domain::connect_sse(url, message_tx, cancel_token) })
+                .spawn(async move {
+                    if is_websocket {
+                        domain::connect_ws(url, message_tx, cancel_token)
+                    } else {
+                        domain::connect_sse(url, message_tx, cancel_token)
+                    }
+                })
                 .await;
 
             if let Err(e) = connect_result {

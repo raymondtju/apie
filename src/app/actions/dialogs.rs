@@ -975,4 +975,265 @@ impl ApiClientApp {
         self.collection_context_menu = None;
         cx.notify();
     }
+
+    // ---------------------------------------------------------------
+    // Import OpenAPI Spec
+    // ---------------------------------------------------------------
+
+    pub(crate) fn start_import_openapi_from_context_menu(
+        &mut self,
+        _: &gpui::ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(_menu) = self.collection_context_menu {
+            self.open_import_openapi_dialog(window, cx);
+        }
+    }
+
+    pub(crate) fn start_import_openapi_from_context_menu_mouse_down(
+        &mut self,
+        _: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(_menu) = self.collection_context_menu {
+            self.open_import_openapi_dialog(window, cx);
+        }
+    }
+
+    pub(crate) fn open_import_openapi_dialog(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = cx.new(|cx| {
+            TextInput::new_with_selector(
+                cx,
+                SharedString::default(),
+                "Path to OpenAPI JSON or YAML file",
+                "import-openapi-input",
+            )
+        });
+        self.import_openapi_dialog = Some(ImportOpenApiDialog { input });
+        self.collection_context_menu = None;
+        cx.notify();
+    }
+
+    pub(crate) fn close_import_openapi_dialog(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.import_openapi_dialog = None;
+        cx.notify();
+    }
+
+    pub(crate) fn confirm_import_openapi(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(dialog) = self.import_openapi_dialog.take() else {
+            return;
+        };
+        let path = dialog.input.read(cx).value().to_string();
+        let trimmed = path.trim().to_string();
+        if trimmed.is_empty() {
+            self.status_line = "File path cannot be empty.".into();
+            self.import_openapi_dialog = Some(dialog);
+            cx.notify();
+            return;
+        }
+
+        match std::fs::read_to_string(&trimmed) {
+            Ok(content) => match domain::openapi::parse_openapi_spec(&content) {
+                Ok(domain_collection) => {
+                    // Count requests recursively (matches the ID-generation count)
+                    fn count_requests(items: &[domain::CollectionItem]) -> usize {
+                        items
+                            .iter()
+                            .map(|item| match item {
+                                domain::CollectionItem::Request(_) => 1,
+                                domain::CollectionItem::Folder { items: ch, .. } => {
+                                    count_requests(ch)
+                                }
+                            })
+                            .sum()
+                    }
+                    let imported_count = count_requests(&domain_collection.items);
+                    let spec_name = domain_collection.name.clone();
+
+                    // Convert domain collection items to app collection items
+                    let app_collection = Workspace::from_domain_collection(domain_collection);
+                    let mut items = app_collection.items;
+
+                    // Pre-generate enough IDs for all items (including nested)
+                    fn count_items(items: &[CollectionItem]) -> usize {
+                        items
+                            .iter()
+                            .map(|i| match i {
+                                CollectionItem::Request(_) => 1,
+                                CollectionItem::Folder { items: ch, .. } => 1 + count_items(ch),
+                            })
+                            .sum()
+                    }
+                    let new_ids: Vec<usize> = (0..count_items(&items))
+                        .map(|_| self.next_item_id())
+                        .collect();
+                    let mut id_iter = new_ids.into_iter();
+                    Self::reassign_item_ids(&mut items, &mut || id_iter.next().unwrap());
+
+                    // Create a new collection named after the spec title
+                    let new_collection_id = self.next_item_id();
+                    self.workspace.collections.push(Collection {
+                        id: new_collection_id,
+                        name: spec_name.into(),
+                        items,
+                    });
+                    self.status_line =
+                        format!("Imported {imported_count} requests into new collection.").into();
+                    self.persist_workspace();
+                }
+                Err(e) => {
+                    self.status_line = format!("Import failed: {e}").into();
+                }
+            },
+            Err(e) => {
+                self.status_line = format!("Could not read file: {e}").into();
+            }
+        }
+        cx.notify();
+    }
+
+    // ---------------------------------------------------------------
+    // Export OpenAPI Spec
+    // ---------------------------------------------------------------
+
+    pub(crate) fn start_export_openapi_from_context_menu(
+        &mut self,
+        _: &gpui::ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(menu) = self.collection_context_menu {
+            self.open_export_openapi_dialog(menu.collection_id, window, cx);
+        }
+    }
+
+    pub(crate) fn start_export_openapi_from_context_menu_mouse_down(
+        &mut self,
+        _: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(menu) = self.collection_context_menu {
+            self.open_export_openapi_dialog(menu.collection_id, window, cx);
+        }
+    }
+
+    pub(crate) fn open_export_openapi_dialog(
+        &mut self,
+        collection_id: usize,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = cx.new(|cx| {
+            TextInput::new_with_selector(
+                cx,
+                SharedString::default(),
+                "Output path for OpenAPI JSON",
+                "export-openapi-input",
+            )
+        });
+        self.export_openapi_dialog = Some(ExportOpenApiDialog {
+            collection_id,
+            input,
+        });
+        self.collection_context_menu = None;
+        cx.notify();
+    }
+
+    pub(crate) fn close_export_openapi_dialog(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.export_openapi_dialog = None;
+        cx.notify();
+    }
+
+    pub(crate) fn confirm_export_openapi(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(dialog) = self.export_openapi_dialog.take() else {
+            return;
+        };
+        let path = dialog.input.read(cx).value().to_string();
+        let trimmed = path.trim().to_string();
+        if trimmed.is_empty() {
+            self.status_line = "File path cannot be empty.".into();
+            self.export_openapi_dialog = Some(dialog);
+            cx.notify();
+            return;
+        }
+
+        // Export only the selected collection, not the entire workspace.
+        let collection = self
+            .workspace
+            .collections
+            .iter()
+            .find(|c| c.id == dialog.collection_id);
+        let Some(collection) = collection else {
+            self.status_line = "Collection not found.".into();
+            cx.notify();
+            return;
+        };
+        let domain_collection = Workspace::to_domain_collection(collection);
+        let domain_workspace = domain::Workspace {
+            id: "local".to_string(),
+            name: domain_collection.name.clone(),
+            active_environment: String::new(),
+            environments: vec![],
+            items: vec![domain_collection],
+            expanded_folders: vec![],
+            expanded_collections: vec![],
+        };
+
+        match domain::export_openapi::workspace_to_openapi_spec(&domain_workspace) {
+            Ok(json) => match std::fs::write(&trimmed, &json) {
+                Ok(_) => {
+                    self.status_line = format!("Exported OpenAPI spec to {trimmed}.").into();
+                }
+                Err(e) => {
+                    self.status_line = format!("Could not write file: {e}").into();
+                }
+            },
+            Err(e) => {
+                self.status_line = format!("Export failed: {e}").into();
+            }
+        }
+        cx.notify();
+    }
+
+    /// Reassign unique IDs to imported collection items recursively.
+    fn reassign_item_ids(items: &mut [CollectionItem], id_gen: &mut impl FnMut() -> usize) {
+        for item in items.iter_mut() {
+            match item {
+                CollectionItem::Request(req) => {
+                    req.id = id_gen();
+                }
+                CollectionItem::Folder { id, items, .. } => {
+                    *id = id_gen();
+                    Self::reassign_item_ids(items, id_gen);
+                }
+            }
+        }
+    }
 }

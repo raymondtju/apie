@@ -3600,6 +3600,160 @@ impl ApiClientApp {
             .into_any_element()
     }
 
+    fn render_import_openapi_dialog(
+        &self,
+        theme: AppTheme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let Some(dialog) = self.import_openapi_dialog.as_ref() else {
+            return div().into_any_element();
+        };
+        let typography = self.typography();
+        let spacing = Spacing::app();
+        ui::modal_overlay(theme)
+            .child(Self::render_dialog_backdrop(cx))
+            .child(
+                div()
+                    .debug_selector(|| "import-openapi-dialog".into())
+                    .absolute()
+                    .top(px(110.0))
+                    .left(px(300.0))
+                    .right(px(300.0))
+                    .bg(theme.panel_overlay_background)
+                    .border_1()
+                    .border_color(theme.panel_focused_border)
+                    .rounded_sm()
+                    .shadow_lg()
+                    .occlude()
+                    .p(spacing.base12())
+                    .flex()
+                    .flex_col()
+                    .gap(spacing.component_gap())
+                    .child(ui::panel_header(
+                        "Import OpenAPI Spec",
+                        "",
+                        theme,
+                        typography,
+                    ))
+                    .child(
+                        ui::muted_label(
+                            "Enter the path to an OpenAPI 3.x JSON or YAML file.",
+                            theme,
+                        )
+                        .text_ui_sm(typography),
+                    )
+                    .child(Self::render_field_input(
+                        "import-openapi-input-shell",
+                        dialog.input.clone(),
+                        theme,
+                        typography,
+                        window,
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap(spacing.component_gap())
+                            .child(Self::render_button(
+                                "Cancel",
+                                false,
+                                ButtonStyle::Transparent,
+                                theme,
+                                Self::close_import_openapi_dialog,
+                                cx,
+                            ))
+                            .child(Self::render_button(
+                                "Import",
+                                false,
+                                ButtonStyle::Filled,
+                                theme,
+                                Self::confirm_import_openapi,
+                                cx,
+                            )),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_export_openapi_dialog(
+        &self,
+        theme: AppTheme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let Some(dialog) = self.export_openapi_dialog.as_ref() else {
+            return div().into_any_element();
+        };
+        let typography = self.typography();
+        let spacing = Spacing::app();
+        ui::modal_overlay(theme)
+            .child(Self::render_dialog_backdrop(cx))
+            .child(
+                div()
+                    .debug_selector(|| "export-openapi-dialog".into())
+                    .absolute()
+                    .top(px(110.0))
+                    .left(px(300.0))
+                    .right(px(300.0))
+                    .bg(theme.panel_overlay_background)
+                    .border_1()
+                    .border_color(theme.panel_focused_border)
+                    .rounded_sm()
+                    .shadow_lg()
+                    .occlude()
+                    .p(spacing.base12())
+                    .flex()
+                    .flex_col()
+                    .gap(spacing.component_gap())
+                    .child(ui::panel_header(
+                        "Export OpenAPI Spec",
+                        "",
+                        theme,
+                        typography,
+                    ))
+                    .child(
+                        ui::muted_label(
+                            "Enter the output path for the OpenAPI 3.x JSON file.",
+                            theme,
+                        )
+                        .text_ui_sm(typography),
+                    )
+                    .child(Self::render_field_input(
+                        "export-openapi-input-shell",
+                        dialog.input.clone(),
+                        theme,
+                        typography,
+                        window,
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap(spacing.component_gap())
+                            .child(Self::render_button(
+                                "Cancel",
+                                false,
+                                ButtonStyle::Transparent,
+                                theme,
+                                Self::close_export_openapi_dialog,
+                                cx,
+                            ))
+                            .child(Self::render_button(
+                                "Export",
+                                false,
+                                ButtonStyle::Filled,
+                                theme,
+                                Self::confirm_export_openapi,
+                                cx,
+                            )),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn render_collection_context_menu(
         &self,
         theme: AppTheme,
@@ -3702,6 +3856,42 @@ impl ApiClientApp {
                                 )
                                 .on_click(
                                     cx.listener(Self::start_delete_collection_from_context_menu),
+                                ),
+                            )
+                            .child(
+                                ui::context_menu_item(
+                                    "collection-context-import-openapi",
+                                    "Import OpenAPI Spec...",
+                                    theme,
+                                    typography,
+                                )
+                                .debug_selector(|| "collection-context-import-openapi".into())
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(
+                                        Self::start_import_openapi_from_context_menu_mouse_down,
+                                    ),
+                                )
+                                .on_click(
+                                    cx.listener(Self::start_import_openapi_from_context_menu),
+                                ),
+                            )
+                            .child(
+                                ui::context_menu_item(
+                                    "collection-context-export-openapi",
+                                    "Export as OpenAPI Spec...",
+                                    theme,
+                                    typography,
+                                )
+                                .debug_selector(|| "collection-context-export-openapi".into())
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(
+                                        Self::start_export_openapi_from_context_menu_mouse_down,
+                                    ),
+                                )
+                                .on_click(
+                                    cx.listener(Self::start_export_openapi_from_context_menu),
                                 ),
                             ),
                     ),
@@ -4647,6 +4837,8 @@ impl Render for ApiClientApp {
             .child(self.render_delete_folder_dialog(theme, cx))
             .child(self.render_rename_collection_dialog(theme, window, cx))
             .child(self.render_delete_collection_dialog(theme, cx))
+            .child(self.render_import_openapi_dialog(theme, window, cx))
+            .child(self.render_export_openapi_dialog(theme, window, cx))
             .child(self.render_request_context_menu(theme, cx))
             .child(self.render_folder_context_menu(theme, cx))
             .child(self.render_collection_context_menu(theme, cx))

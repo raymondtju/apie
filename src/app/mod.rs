@@ -184,6 +184,15 @@ pub(crate) struct CollectionContextMenu {
     pub(crate) position: Point<Pixels>,
 }
 
+pub(crate) struct ImportOpenApiDialog {
+    pub(crate) input: Entity<TextInput>,
+}
+
+pub(crate) struct ExportOpenApiDialog {
+    pub(crate) collection_id: usize,
+    pub(crate) input: Entity<TextInput>,
+}
+
 pub(crate) struct WorkspaceCreateDialog {
     pub(crate) input: Entity<TextInput>,
 }
@@ -336,6 +345,8 @@ pub(crate) struct ApiClientApp {
     delete_request_dialog: Option<RequestDeleteDialog>,
     delete_folder_dialog: Option<FolderDeleteDialog>,
     delete_collection_dialog: Option<CollectionDeleteDialog>,
+    import_openapi_dialog: Option<ImportOpenApiDialog>,
+    export_openapi_dialog: Option<ExportOpenApiDialog>,
     create_workspace_dialog: Option<WorkspaceCreateDialog>,
     workspace_menu_open: bool,
     workspaces_list: Vec<(String, PathBuf)>,
@@ -460,6 +471,8 @@ impl ApiClientApp {
             delete_request_dialog: None,
             delete_folder_dialog: None,
             delete_collection_dialog: None,
+            import_openapi_dialog: None,
+            export_openapi_dialog: None,
             create_workspace_dialog: None,
             workspace_menu_open: false,
             workspaces_list: Vec::new(),

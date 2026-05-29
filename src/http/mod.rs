@@ -1,3 +1,7 @@
+pub mod ws;
+
+pub use ws::connect_ws;
+
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

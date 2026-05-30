@@ -312,4 +312,12 @@ impl ApiClientApp {
         self.response_scroll_handle
             .set_offset(point(self.response_scroll_handle.offset().x, -y_offset));
     }
+
+    pub(crate) fn focus_next(&mut self, _: &FocusNext, window: &mut Window, _: &mut Context<Self>) {
+        window.focus_next();
+    }
+
+    pub(crate) fn focus_prev(&mut self, _: &FocusPrev, window: &mut Window, _: &mut Context<Self>) {
+        window.focus_prev();
+    }
 }

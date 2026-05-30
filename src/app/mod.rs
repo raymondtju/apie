@@ -75,7 +75,9 @@ actions!(
         ToggleFind,
         FindNext,
         FindPrevious,
-        CloseFind
+        CloseFind,
+        FocusNext,
+        FocusPrev
     ]
 );
 
@@ -96,6 +98,8 @@ pub(crate) fn bind_app_keys(cx: &mut App) {
         KeyBinding::new("shift-enter", FindPrevious, Some("FindQueryInput")),
         KeyBinding::new("f3", FindNext, None),
         KeyBinding::new("shift-f3", FindPrevious, None),
+        KeyBinding::new("tab", FocusNext, None),
+        KeyBinding::new("shift-tab", FocusPrev, None),
     ]);
 }
 
@@ -184,8 +188,33 @@ pub(crate) struct CollectionContextMenu {
     pub(crate) position: Point<Pixels>,
 }
 
+pub(crate) enum ImportSource {
+    File(PathBuf),
+    Url {
+        url: String,
+        auth: domain::Auth,
+        body_hash: u64,
+    },
+}
+
+pub(crate) struct WatchedImport {
+    pub(crate) collection_id: usize,
+    pub(crate) source: ImportSource,
+    // File-specific: tracks last known modified time for change detection
+    pub(crate) file_modified: Option<std::time::SystemTime>,
+    pub(crate) _watch_task: gpui::Task<()>,
+}
+
 pub(crate) struct ImportOpenApiDialog {
     pub(crate) input: Entity<TextInput>,
+    pub(crate) auth_type: Auth,
+    pub(crate) auth_menu_open: bool,
+    pub(crate) auth_token_input: Entity<TextInput>,
+    pub(crate) auth_username_input: Entity<TextInput>,
+    pub(crate) auth_password_input: Entity<TextInput>,
+    pub(crate) auth_name_input: Entity<TextInput>,
+    pub(crate) auth_value_input: Entity<TextInput>,
+    pub(crate) watch_enabled: bool,
 }
 
 pub(crate) struct ExportOpenApiDialog {
@@ -369,8 +398,13 @@ pub(crate) struct ApiClientApp {
     stream_tasks: BTreeMap<usize, gpui::Task<()>>,
     stream_msg_tasks: BTreeMap<usize, gpui::Task<()>>,
     stream_expanded_messages: HashSet<(usize, usize)>,
+    stream_search_queries: BTreeMap<usize, SharedString>,
+    stream_search_inputs: BTreeMap<usize, Entity<TextInput>>,
+    stream_show_hex: BTreeMap<usize, bool>,
     stream_list_state: ListState,
     stream_list_scrollbar: Entity<ui::ListScrollbar>,
+    watched_imports: Vec<WatchedImport>,
+    focus_handles: BTreeMap<String, FocusHandle>,
 }
 
 pub(crate) struct FindState {
@@ -428,7 +462,7 @@ impl ApiClientApp {
             cx.new(|_| ui::VerticalScrollbar::new(response_scroll_handle.clone()));
         let response_horizontal_scrollbar =
             cx.new(|_| ui::HorizontalScrollbar::new(response_scroll_handle.clone()));
-        let stream_list_state = ListState::new(0, ListAlignment::Bottom, px(2048.));
+        let stream_list_state = ListState::new(0, ListAlignment::Top, px(2048.));
         let stream_list_scrollbar = cx.new(|_| ui::ListScrollbar::new(stream_list_state.clone()));
         let settings = load_app_settings(&settings_path).unwrap_or_default();
         let theme_mode = Self::theme_mode_from_settings(settings.clone(), cx);
@@ -497,8 +531,13 @@ impl ApiClientApp {
             stream_tasks: BTreeMap::new(),
             stream_msg_tasks: BTreeMap::new(),
             stream_expanded_messages: HashSet::new(),
+            stream_search_queries: BTreeMap::new(),
+            stream_search_inputs: BTreeMap::new(),
+            stream_show_hex: BTreeMap::new(),
             stream_list_state,
             stream_list_scrollbar,
+            watched_imports: Vec::new(),
+            focus_handles: BTreeMap::new(),
         };
         app.refresh_workspaces_list();
         app

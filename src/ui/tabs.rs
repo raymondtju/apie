@@ -179,7 +179,7 @@ pub fn context_menu_item(
         .text_color(theme.text)
         .text_ui(typography)
         .hover(move |this| this.bg(theme.ghost_element_hover))
-        .child(label.into())
+        .child(div().truncate().child(label.into()))
 }
 
 pub fn tab_bar(theme: AppTheme) -> Stateful<Div> {

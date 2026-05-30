@@ -16,6 +16,27 @@ impl ApiClientApp {
         ui::button_base(("button", id), label, active, style, theme).on_click(cx.listener(on_click))
     }
 
+    fn render_tab_button(
+        &mut self,
+        key: &'static str,
+        label: impl Into<SharedString>,
+        active: bool,
+        style: ButtonStyle,
+        theme: AppTheme,
+        on_click: impl Fn(&mut Self, &gpui::ClickEvent, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let label = label.into();
+        let handle = self.tab_handle(format!("button:{key}"), cx);
+        let id = key.bytes().fold(0usize, |hash, byte| {
+            hash.wrapping_mul(31).wrapping_add(byte as usize)
+        });
+        ui::button_base(("button", id), label, active, style, theme)
+            .track_focus(&handle)
+            .tab_stop(true)
+            .on_click(cx.listener(on_click))
+    }
+
     fn render_scoped_button(
         scope: &'static str,
         label: impl Into<SharedString>,
@@ -61,6 +82,7 @@ impl ApiClientApp {
     }
 
     fn render_toolbar_button(
+        &mut self,
         label: impl Into<SharedString>,
         active: bool,
         style: ButtonStyle,
@@ -69,6 +91,7 @@ impl ApiClientApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let label = label.into();
+        let handle = self.tab_handle(format!("toolbar-btn:{}", label.as_ref()), cx);
         let id = label.bytes().fold(0usize, |hash, byte| {
             hash.wrapping_mul(31).wrapping_add(byte as usize)
         });
@@ -80,6 +103,8 @@ impl ApiClientApp {
             ui::ButtonSize::Medium,
             theme,
         )
+        .track_focus(&handle)
+        .tab_stop(true)
         .on_click(cx.listener(on_click))
     }
 
@@ -1081,6 +1106,7 @@ impl ApiClientApp {
         let focused = self.url_input.read(cx).is_focused(window);
         ui::input_field_shell("url-input-shell", focused, theme, typography)
             .track_focus(&focus_handle)
+            .tab_stop(true)
             .cursor(CursorStyle::IBeam)
             .on_mouse_down(MouseButton::Left, cx.listener(Self::focus_url_input))
             .child(self.url_input.clone())
@@ -1123,6 +1149,7 @@ impl ApiClientApp {
         ui::input_field_shell_with_selector(id, "field-input-shell", focused, theme, typography)
             .bg(background)
             .track_focus(&focus_handle)
+            .tab_stop(true)
             .cursor(CursorStyle::IBeam)
             .on_mouse_down(
                 MouseButton::Left,
@@ -1136,7 +1163,7 @@ impl ApiClientApp {
     }
 
     fn render_method_select(
-        &self,
+        &mut self,
         request: &Request,
         theme: AppTheme,
         typography: Typography,
@@ -1144,6 +1171,7 @@ impl ApiClientApp {
     ) -> impl IntoElement {
         let current_method = request.method;
         let spacing = Spacing::app();
+        let method_handle = self.tab_handle("method-select", cx);
 
         div()
             .relative()
@@ -1159,6 +1187,8 @@ impl ApiClientApp {
                     typography,
                 )
                 .debug_selector(|| "method-select-trigger".into())
+                .track_focus(&method_handle)
+                .tab_stop(true)
                 .on_click(cx.listener(Self::toggle_method_menu)),
             )
             .when(self.method_menu_open, |this| {
@@ -1169,6 +1199,7 @@ impl ApiClientApp {
                     .enumerate()
                     .map(|(index, method)| {
                         let debug_selector = format!("method-option-{}", method.as_str());
+                        let item_handle = self.tab_handle(format!("method-opt-{index}"), cx);
                         ui::select_menu_item(
                             ("method-option", index),
                             method.as_str(),
@@ -1178,6 +1209,8 @@ impl ApiClientApp {
                             typography,
                         )
                         .debug_selector(move || debug_selector.clone())
+                        .track_focus(&item_handle)
+                        .tab_stop(true)
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, event, window, cx| {
@@ -1550,7 +1583,7 @@ impl ApiClientApp {
                             )
                             .into_any_element()
                         } else {
-                            Self::render_toolbar_button(
+                            self.render_toolbar_button(
                                 "Send",
                                 true,
                                 ButtonStyle::Filled,
@@ -3002,13 +3035,14 @@ impl ApiClientApp {
     }
 
     fn render_auth_select(
-        &self,
+        &mut self,
         request: &Request,
         theme: AppTheme,
         typography: Typography,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let spacing = Spacing::app();
+        let auth_handle = self.tab_handle("auth-select", cx);
         div()
             .relative()
             .flex_none()
@@ -3023,6 +3057,8 @@ impl ApiClientApp {
                     typography,
                 )
                 .debug_selector(|| "auth-select-trigger".into())
+                .track_focus(&auth_handle)
+                .tab_stop(true)
                 .on_click(cx.listener(Self::toggle_auth_menu)),
             )
             .when(self.auth_menu_open, |this| {
@@ -3053,6 +3089,7 @@ impl ApiClientApp {
                         label.to_ascii_lowercase().replace(' ', "-")
                     );
                     let mode_slot = std::sync::Arc::new(mode);
+                    let item_handle = cx.focus_handle().tab_stop(true);
                     ui::select_menu_item(
                         ("auth-option", index),
                         label,
@@ -3062,6 +3099,8 @@ impl ApiClientApp {
                         typography,
                     )
                     .debug_selector(move || debug_selector.clone())
+                    .track_focus(&item_handle)
+                    .tab_stop(true)
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener({
@@ -3914,6 +3953,7 @@ impl ApiClientApp {
                     .left_0()
                     .right_0()
                     .bottom_0()
+                    .occlude()
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.dismiss_workspace_menu(cx);
                     })),
@@ -4695,6 +4735,8 @@ impl Render for ApiClientApp {
             .on_action(cx.listener(Self::find_next_from_action))
             .on_action(cx.listener(Self::find_previous_from_action))
             .on_action(cx.listener(Self::close_find_from_action))
+            .on_action(cx.listener(Self::focus_next))
+            .on_action(cx.listener(Self::focus_prev))
             .on_mouse_move(cx.listener(Self::update_pane_resize))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::finish_pane_resize))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::finish_pane_resize))

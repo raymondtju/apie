@@ -56,6 +56,18 @@ impl ApiClientApp {
         input
     }
 
+    pub(crate) fn tab_handle(
+        &mut self,
+        key: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) -> FocusHandle {
+        let key = key.into();
+        self.focus_handles
+            .entry(key)
+            .or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone()
+    }
+
     pub(crate) fn body_input(
         &mut self,
         request_id: usize,

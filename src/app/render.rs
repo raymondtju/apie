@@ -651,6 +651,23 @@ impl ApiClientApp {
                                     .text_color(theme.text)
                                     .truncate()
                                     .child(collection.name.clone()),
+                            )
+                            .when(
+                                self.watched_imports.iter().any(|w| w.collection_id == col_id),
+                                |this| {
+                                    this.child(
+                                        div()
+                                            .child({
+                                                ui::icon_button_base(
+                                                    ("watched-icon", col_id),
+                                                    IconName::Check,
+                                                    false,
+                                                    theme,
+                                                )
+                                            })
+                                            .ml(spacing.base04()),
+                                    )
+                                },
                             ),
                     )
                     .into_any_element(),
@@ -3690,6 +3707,202 @@ impl ApiClientApp {
                         window,
                         cx,
                     ))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(spacing.component_gap())
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(spacing.component_gap())
+                                    .child(
+                                        ui::muted_label("Auth (optional)", theme).text_ui_sm(typography),
+                                    )
+                                    .child(
+                                        div()
+                                            .relative()
+                                            .flex_none()
+                                            .child(
+                                                ui::select_trigger_with_size(
+                                                    "import-auth-select-trigger",
+                                                    dialog.auth_type.label(),
+                                                    theme.accent,
+                                                    dialog.auth_menu_open,
+                                                    ui::ButtonSize::Default,
+                                                    theme,
+                                                    typography,
+                                                )
+                                                .debug_selector(|| "import-auth-select-trigger".into())
+                                                .on_click(cx.listener(Self::toggle_import_auth_menu)),
+                                            )
+                                            .when(dialog.auth_menu_open, |this| {
+                                                let items: Vec<AnyElement> = [
+                                                    Auth::None,
+                                                    Auth::Bearer { label: "token".into(), secret_ref: "{{token}}".into() },
+                                                    Auth::Basic { username: "user".into(), password: "{{password}}".into() },
+                                                    Auth::ApiKey { name: "x-api-key".into(), secret_ref: "{{value}}".into(), location: AuthLocation::Header },
+                                                ]
+                                                .into_iter()
+                                                .enumerate()
+                                                .map(|(index, mode)| {
+                                                    let label = mode.label();
+                                                    let is_current =
+                                                        std::mem::discriminant(&dialog.auth_type) == std::mem::discriminant(&mode);
+                                                    let debug_selector = format!(
+                                                        "import-auth-option-{}",
+                                                        label.to_ascii_lowercase().replace(' ', "-")
+                                                    );
+                                                    let mode_slot = std::sync::Arc::new(mode);
+                                                    let item_handle = cx.focus_handle().tab_stop(true);
+                                                    ui::select_menu_item(
+                                                        ("import-auth-option", index),
+                                                        label,
+                                                        theme.accent,
+                                                        is_current,
+                                                        theme,
+                                                        typography,
+                                                    )
+                                                    .debug_selector(move || debug_selector.clone())
+                                                    .track_focus(&item_handle)
+                                                    .tab_stop(true)
+                                                    .on_click(cx.listener({
+                                                        let mode_slot = mode_slot.clone();
+                                                        move |this, event, window, cx| {
+                                                            this.set_import_auth_type(
+                                                                &*mode_slot,
+                                                                event,
+                                                                window,
+                                                                cx,
+                                                            )
+                                                        }
+                                                    }))
+                                                    .into_any_element()
+                                                })
+                                                .collect();
+                                                this.child(
+                                                    deferred(
+                                                        div()
+                                                            .absolute()
+                                                            .top(px(26.0))
+                                                            .left_0()
+                                                            .id("import-auth-select-menu")
+                                                            .debug_selector(|| "import-auth-select-menu".into())
+                                                            .w(px(130.0))
+                                                            .p(spacing.base04())
+                                                            .rounded_sm()
+                                                            .border_1()
+                                                            .border_color(theme.panel_focused_border)
+                                                            .bg(theme.panel_overlay_background)
+                                                            .shadow_lg()
+                                                            .flex()
+                                                            .flex_col()
+                                                            .gap(spacing.base04())
+                                                            .on_mouse_move(|_, _, _| {})
+                                                            .children(items),
+                                                    )
+                                                    .with_priority(3),
+                                                )
+                                            }),
+                                    )
+                            )
+                            .when(!matches!(dialog.auth_type, Auth::None), |this| {
+                                match &dialog.auth_type {
+                                    Auth::Bearer { .. } => this.child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(spacing.component_gap())
+                                            .child(Self::render_field_input(
+                                                "import-auth-token-shell",
+                                                dialog.auth_token_input.clone(),
+                                                theme,
+                                                typography,
+                                                window,
+                                                cx,
+                                            )),
+                                    ),
+                                    Auth::Basic { .. } => this.child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(spacing.component_gap())
+                                            .child(Self::render_field_input(
+                                                "import-auth-username-shell",
+                                                dialog.auth_username_input.clone(),
+                                                theme,
+                                                typography,
+                                                window,
+                                                cx,
+                                            ))
+                                            .child(Self::render_field_input(
+                                                "import-auth-password-shell",
+                                                dialog.auth_password_input.clone(),
+                                                theme,
+                                                typography,
+                                                window,
+                                                cx,
+                                            )),
+                                    ),
+                                    Auth::ApiKey { .. } => this.child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(spacing.component_gap())
+                                            .child(Self::render_field_input(
+                                                "import-auth-name-shell",
+                                                dialog.auth_name_input.clone(),
+                                                theme,
+                                                typography,
+                                                window,
+                                                cx,
+                                            ))
+                                            .child(Self::render_field_input(
+                                                "import-auth-value-shell",
+                                                dialog.auth_value_input.clone(),
+                                                theme,
+                                                typography,
+                                                window,
+                                                cx,
+                                            )),
+                                    ),
+                                    Auth::None => this,
+                                }
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(spacing.component_gap())
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .w(px(16.0))
+                                            .child(if dialog.watch_enabled {
+                                                ui::icon_button_base(
+                                                    "import-watch-toggle",
+                                                    IconName::Check,
+                                                    false,
+                                                    theme,
+                                                )
+                                                .on_click(cx.listener(Self::toggle_import_watch))
+                                            } else {
+                                                ui::icon_button_base(
+                                                    "import-watch-toggle",
+                                                    IconName::Check,
+                                                    false,
+                                                    theme,
+                                                )
+                                                .on_click(cx.listener(Self::toggle_import_watch))
+                                                .opacity(0.3)
+                                            }),
+                                    )
+                                    .child(
+                                        ui::muted_label("Watch for changes", theme).text_ui_sm(typography),
+                                    ),
+                            ),
+                    )
                     .child(
                         div()
                             .flex()

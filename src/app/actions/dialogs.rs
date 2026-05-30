@@ -1,4 +1,5 @@
 use super::*;
+use std::hash::{Hash, Hasher};
 
 impl ApiClientApp {
     pub(crate) fn open_request_context_menu(
@@ -834,6 +835,9 @@ impl ApiClientApp {
         if let Some(deleted_collection) = self.workspace.remove_collection(collection_id) {
             let closed_name = deleted_collection.name.clone();
 
+            // Clean up any watch for this collection
+            self.watched_imports.retain(|w| w.collection_id != collection_id);
+
             for req_id in request_ids_to_close {
                 self.open_tabs.retain(|id| *id != req_id);
                 self.body_inputs.remove(&req_id);
@@ -1011,11 +1015,36 @@ impl ApiClientApp {
             TextInput::new_with_selector(
                 cx,
                 SharedString::default(),
-                "Path to OpenAPI JSON or YAML file",
+                "Path or URL to OpenAPI JSON/YAML spec",
                 "import-openapi-input",
             )
         });
-        self.import_openapi_dialog = Some(ImportOpenApiDialog { input });
+        let auth_token_input = cx.new(|cx| {
+            TextInput::new_with_selector(cx, SharedString::default(), "token or {{token}}", "import-auth-token-input")
+        });
+        let auth_username_input = cx.new(|cx| {
+            TextInput::new_with_selector(cx, SharedString::default(), "username", "import-auth-username-input")
+        });
+        let auth_password_input = cx.new(|cx| {
+            TextInput::new_with_selector(cx, SharedString::default(), "password or {{password}}", "import-auth-password-input")
+        });
+        let auth_name_input = cx.new(|cx| {
+            TextInput::new_with_selector(cx, SharedString::default(), "x-api-key", "import-auth-name-input")
+        });
+        let auth_value_input = cx.new(|cx| {
+            TextInput::new_with_selector(cx, SharedString::default(), "value or {{value}}", "import-auth-value-input")
+        });
+        self.import_openapi_dialog = Some(ImportOpenApiDialog {
+            input,
+            auth_type: Auth::None,
+            auth_menu_open: false,
+            auth_token_input,
+            auth_username_input,
+            auth_password_input,
+            auth_name_input,
+            auth_value_input,
+            watch_enabled: false,
+        });
         self.collection_context_menu = None;
         cx.notify();
     }
@@ -1048,8 +1077,65 @@ impl ApiClientApp {
             return;
         }
 
-        match std::fs::read_to_string(&trimmed) {
-            Ok(content) => match domain::openapi::parse_openapi_spec(&content) {
+        let is_url = trimmed.starts_with("http://") || trimmed.starts_with("https://");
+        let (content, url_domain_auth) = if is_url {
+            // Build domain auth from dialog's auth inputs
+            let domain_auth = match &dialog.auth_type {
+                Auth::None => domain::Auth::None,
+                Auth::Bearer { .. } => domain::Auth::Bearer {
+                    token_ref: dialog.auth_token_input.read(cx).value().to_string(),
+                },
+                Auth::Basic { .. } => domain::Auth::Basic {
+                    username_ref: dialog.auth_username_input.read(cx).value().to_string(),
+                    password_ref: dialog.auth_password_input.read(cx).value().to_string(),
+                },
+                Auth::ApiKey { location, .. } => domain::Auth::ApiKey {
+                    name: dialog.auth_name_input.read(cx).value().to_string(),
+                    value_ref: dialog.auth_value_input.read(cx).value().to_string(),
+                    location: match location {
+                        AuthLocation::Header => domain::ApiKeyLocation::Header,
+                        AuthLocation::Query => domain::ApiKeyLocation::Query,
+                        AuthLocation::Cookie => domain::ApiKeyLocation::Cookie,
+                    },
+                },
+            };
+            let mut fetch_req = domain::Request::new("", "", domain::Method::Get, &trimmed);
+            fetch_req.auth = domain_auth.clone();
+            apply_auth(&mut fetch_req);
+            match domain::send_http_request(&fetch_req) {
+                Ok(response) => {
+                    if response.status >= 400 {
+                        self.status_line = format!(
+                            "Failed to fetch OpenAPI spec: HTTP {}",
+                            response.status
+                        )
+                        .into();
+                        self.import_openapi_dialog = Some(dialog);
+                        cx.notify();
+                        return;
+                    }
+                    (response.body, Some(domain_auth))
+                }
+                Err(e) => {
+                    self.status_line = format!("Failed to fetch OpenAPI spec: {e}").into();
+                    self.import_openapi_dialog = Some(dialog);
+                    cx.notify();
+                    return;
+                }
+            }
+        } else {
+            match std::fs::read_to_string(&trimmed) {
+                Ok(content) => (content, None),
+                Err(e) => {
+                    self.status_line = format!("Could not read file: {e}").into();
+                    self.import_openapi_dialog = Some(dialog);
+                    cx.notify();
+                    return;
+                }
+            }
+        };
+
+        match domain::openapi::parse_openapi_spec(&content) {
                 Ok(domain_collection) => {
                     // Count requests recursively (matches the ID-generation count)
                     fn count_requests(items: &[domain::CollectionItem]) -> usize {
@@ -1096,16 +1182,210 @@ impl ApiClientApp {
                     self.status_line =
                         format!("Imported {imported_count} requests into new collection.").into();
                     self.persist_workspace();
+
+                    if dialog.watch_enabled {
+                        if let Some(auth) = url_domain_auth {
+                            let body_hash = {
+                                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                                content.hash(&mut hasher);
+                                hasher.finish()
+                            };
+                            let source = ImportSource::Url {
+                                url: trimmed,
+                                auth,
+                                body_hash,
+                            };
+                            self.start_watching_import(new_collection_id, source, cx);
+                        } else {
+                            let source = ImportSource::File(std::path::PathBuf::from(&trimmed));
+                            self.start_watching_import(new_collection_id, source, cx);
+                        }
+                        self.status_line = format!(
+                            "Imported {imported_count} requests into new collection. Watching for changes..."
+                        )
+                        .into();
+                    }
                 }
                 Err(e) => {
                     self.status_line = format!("Import failed: {e}").into();
                 }
-            },
+            }
+        cx.notify();
+    }
+
+    // Import OpenAPI Dialog — Auth handlers
+
+    pub(crate) fn toggle_import_auth_menu(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(dialog) = self.import_openapi_dialog.as_mut() {
+            dialog.auth_menu_open = !dialog.auth_menu_open;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn set_import_auth_type(
+        &mut self,
+        auth: &Auth,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(dialog) = self.import_openapi_dialog.as_mut() {
+            dialog.auth_type = auth.clone();
+            dialog.auth_menu_open = false;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn toggle_import_watch(
+        &mut self,
+        _: &gpui::ClickEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(dialog) = self.import_openapi_dialog.as_mut() {
+            dialog.watch_enabled = !dialog.watch_enabled;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn start_watching_import(
+        &mut self,
+        collection_id: usize,
+        source: ImportSource,
+        cx: &mut Context<Self>,
+    ) {
+        // Cancel any existing watch for this collection
+        self.watched_imports.retain(|w| w.collection_id != collection_id);
+
+        let file_modified = match &source {
+            ImportSource::File(path) => std::fs::metadata(path).ok().and_then(|m| m.modified().ok()),
+            ImportSource::Url { .. } => None,
+        };
+
+        let task = cx.spawn(async move |this, cx| {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                let _ = this.update(cx, |app, cx| {
+                    app.reimport_watched_spec(collection_id, cx);
+                });
+            }
+        });
+
+        self.watched_imports.push(WatchedImport {
+            collection_id,
+            source,
+            file_modified,
+            _watch_task: task,
+        });
+    }
+
+    pub(crate) fn reimport_watched_spec(
+        &mut self,
+        collection_id: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let watch_idx = match self
+            .watched_imports
+            .iter()
+            .position(|w| w.collection_id == collection_id)
+        {
+            Some(idx) => idx,
+            None => return,
+        };
+
+        let (content, is_changed) = match &self.watched_imports[watch_idx].source {
+            ImportSource::File(path) => {
+                let current_mtime = match std::fs::metadata(path).and_then(|m| m.modified()) {
+                    Ok(t) => t,
+                    Err(_) => return, // file gone temporarily — keep watching
+                };
+                let last = self.watched_imports[watch_idx].file_modified;
+                if let Some(last) = last {
+                    if current_mtime <= last {
+                        return; // no change
+                    }
+                }
+                match std::fs::read_to_string(path) {
+                    Ok(c) => {
+                        self.watched_imports[watch_idx].file_modified = Some(current_mtime);
+                        (c, true)
+                    }
+                    Err(e) => {
+                        self.status_line = format!("Watch re-import failed: {e}").into();
+                        cx.notify();
+                        return;
+                    }
+                }
+            }
+            ImportSource::Url {
+                url,
+                auth,
+                body_hash: old_hash,
+            } => {
+                let mut req = domain::Request::new("", "", domain::Method::Get, url);
+                req.auth = auth.clone();
+                apply_auth(&mut req);
+                match domain::send_http_request(&req) {
+                    Ok(response) if response.status < 400 => {
+                        let body = response.body;
+                        let new_hash = {
+                            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                            body.hash(&mut hasher);
+                            hasher.finish()
+                        };
+                        if new_hash == *old_hash {
+                            return; // no change
+                        }
+                        if let ImportSource::Url { body_hash, .. } =
+                            &mut self.watched_imports[watch_idx].source
+                        {
+                            *body_hash = new_hash;
+                        }
+                        (body, true)
+                    }
+                    Ok(response) => {
+                        self.status_line =
+                            format!("Watch re-import failed: HTTP {}", response.status).into();
+                        cx.notify();
+                        return;
+                    }
+                    Err(e) => {
+                        self.status_line = format!("Watch re-import failed: {e}").into();
+                        cx.notify();
+                        return;
+                    }
+                }
+            }
+        };
+
+        if !is_changed {
+            return;
+        }
+
+        match domain::openapi::parse_openapi_spec(&content) {
+            Ok(domain_collection) => {
+                if let Some(collection) =
+                    self.workspace.collections.iter_mut().find(|c| c.id == collection_id)
+                {
+                    let app_collection = Workspace::from_domain_collection(domain_collection);
+                    collection.name = app_collection.name;
+                    collection.items = app_collection.items;
+                    self.status_line = "Re-imported watched spec.".into();
+                    self.persist_workspace();
+                    cx.notify();
+                }
+            }
             Err(e) => {
-                self.status_line = format!("Could not read file: {e}").into();
+                self.status_line = format!("Watch re-import failed (invalid spec): {e}").into();
+                cx.notify();
             }
         }
-        cx.notify();
     }
 
     // ---------------------------------------------------------------

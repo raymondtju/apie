@@ -2216,7 +2216,11 @@ impl ApiClientApp {
                     cx,
                 ),
                 (ResponsePanel::Stream, _) => {
-                    self.render_response_stream(active_request_id.unwrap_or_default(), theme, cx)
+                    self.render_response_stream(
+                        active_request_id.unwrap_or_default(),
+                        theme,
+                        cx,
+                    )
                 }
                 (_, None) if self.is_active_request_in_flight() => {
                     self.render_response_loading(theme, cx)
@@ -4672,6 +4676,64 @@ impl ApiClientApp {
             StreamStatus::Connected => theme.success,
         };
 
+        // Compute message rate (msg/s)
+        let rate_str = {
+            let msg_count = stream_state.messages.len();
+            if msg_count > 0 {
+                if let Some(started) = stream_state.started_at {
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let elapsed_secs = ((now_ms - started) as f64) / 1000.0;
+                    if elapsed_secs > 0.0 {
+                        let rate = msg_count as f64 / elapsed_secs;
+                        format!("{} msgs, {:.1}/s", msg_count, rate)
+                    } else {
+                        format!("{} msgs", msg_count)
+                    }
+                } else {
+                    format!("{} msgs", msg_count)
+                }
+            } else {
+                "0 msgs".to_string()
+            }
+        };
+
+        // Search query for this request
+        let search_query = self
+            .stream_search_queries
+            .get(&request_id)
+            .cloned()
+            .unwrap_or_default();
+
+        // Search input (create lazily)
+        if !self.stream_search_inputs.contains_key(&request_id) {
+            let input = cx.new(|cx| {
+                TextInput::new_with_selector(
+                    cx,
+                    SharedString::default(),
+                    "Search messages…",
+                    "stream-search-input",
+                )
+            });
+            self.stream_search_inputs.insert(request_id, input);
+        }
+        let search_input = self.stream_search_inputs[&request_id].clone();
+
+        // Sync TextInput value into search query (no-op if unchanged)
+        let current_search_value: SharedString = search_input.read(cx).value().clone().into();
+        if current_search_value != search_query {
+            self.stream_search_queries
+                .insert(request_id, current_search_value.clone());
+        }
+        let show_hex = self
+            .stream_show_hex
+            .get(&request_id)
+            .copied()
+            .unwrap_or(true);
+        let is_pinned = stream_state.pin_to_bottom;
+
         let list_state = self.stream_list_state.clone();
 
         div()
@@ -4680,69 +4742,180 @@ impl ApiClientApp {
             .flex_1()
             .min_h_0()
             .bg(theme.surface_background)
-            // Status header
+            // Status + controls bar
             .child(
                 div()
                     .flex()
-                    .items_center()
-                    .justify_between()
-                    .px(spacing.base12())
-                    .py(spacing.base08())
+                    .flex_col()
                     .border_b_1()
                     .border_color(theme.border_variant)
+                    // Top row: status + action buttons
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(spacing.base08())
-                            .child(div().w(px(8.0)).h(px(8.0)).rounded_full().bg(status_color))
+                            .justify_between()
+                            .px(spacing.base12())
+                            .py(spacing.base06())
                             .child(
                                 div()
-                                    .text_color(status_color)
-                                    .text_ui_sm(typography)
-                                    .child(status_text),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(spacing.base08())
-                            .when(stream_state.status == StreamStatus::Disconnected, |this| {
-                                this.child(
-                                    ui::button_base(
-                                        "stream-connect",
-                                        "Connect",
-                                        false,
-                                        ButtonStyle::Tinted(ui::TintColor::Accent),
-                                        theme,
+                                    .flex()
+                                    .items_center()
+                                    .gap(spacing.base08())
+                                    .child(
+                                        div().w(px(8.0)).h(px(8.0)).rounded_full().bg(status_color),
                                     )
-                                    .on_click(cx.listener(
-                                        |this, event, window, cx| {
-                                            this.start_stream(event, window, cx);
-                                        },
-                                    )),
-                                )
-                            })
-                            .when(
-                                stream_state.status == StreamStatus::Connected
-                                    || stream_state.status == StreamStatus::Connecting,
-                                |this| {
-                                    this.child(
+                                    .child(
+                                        div()
+                                            .text_color(status_color)
+                                            .text_ui_sm(typography)
+                                            .child(status_text),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_ui_xs(typography)
+                                            .text_color(theme.text_muted)
+                                            .child(rate_str),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(spacing.base04())
+                                    // Pin-to-bottom toggle
+                                    .child(
                                         ui::button_base(
-                                            "stream-disconnect",
-                                            "Disconnect",
+                                            "stream-pin",
+                                            if is_pinned { "Auto↓" } else { "Pause↓" },
                                             false,
-                                            ButtonStyle::Tinted(ui::TintColor::Error),
+                                            ButtonStyle::Tinted(ui::TintColor::Accent),
                                             theme,
                                         )
                                         .on_click(
-                                            cx.listener(|this, event, window, cx| {
-                                                this.stop_stream(event, window, cx);
+                                            cx.listener(move |this, _, _, cx| {
+                                                if let Some(state) =
+                                                    this.stream_state.get_mut(&request_id)
+                                                {
+                                                    state.pin_to_bottom = !state.pin_to_bottom;
+                                                    if state.pin_to_bottom {
+                                                        let last = this
+                                                            .stream_list_state
+                                                            .item_count()
+                                                            .saturating_sub(1);
+                                                        this.stream_list_state.scroll_to(
+                                                            gpui::ListOffset {
+                                                                item_ix: last,
+                                                                offset_in_item: gpui::Pixels::ZERO,
+                                                            },
+                                                        );
+                                                    }
+                                                    cx.notify();
+                                                }
                                             }),
                                         ),
                                     )
-                                },
+                                    // Hex/Text toggle (only shown when there are binary messages)
+                                    .when(
+                                        stream_state.messages.iter().any(|m| m.is_binary),
+                                        |this| {
+                                            this.child(
+                                                ui::button_base(
+                                                    ("stream-hex-toggle", request_id),
+                                                    if show_hex { "Hex" } else { "Text" },
+                                                    false,
+                                                    ButtonStyle::Tinted(ui::TintColor::Accent),
+                                                    theme,
+                                                )
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    let current = this
+                                                        .stream_show_hex
+                                                        .get(&request_id)
+                                                        .copied()
+                                                        .unwrap_or(true);
+                                                    this.stream_show_hex
+                                                        .insert(request_id, !current);
+                                                    cx.notify();
+                                                })),
+                                            )
+                                        },
+                                    )
+                                    // Save button
+                                    .child(
+                                        ui::button_base(
+                                            ("stream-save", request_id),
+                                            "Save",
+                                            false,
+                                            ButtonStyle::Tinted(ui::TintColor::Accent),
+                                            theme,
+                                        )
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.save_stream_session(request_id, cx);
+                                            }),
+                                        ),
+                                    )
+                                    // Connect/Disconnect
+                                    .when(
+                                        stream_state.status == StreamStatus::Disconnected,
+                                        |this| {
+                                            this.child(
+                                                ui::button_base(
+                                                    "stream-connect",
+                                                    "Connect",
+                                                    false,
+                                                    ButtonStyle::Tinted(ui::TintColor::Accent),
+                                                    theme,
+                                                )
+                                                .on_click(cx.listener(
+                                                    |this, event, window, cx| {
+                                                        this.start_stream(event, window, cx);
+                                                    },
+                                                )),
+                                            )
+                                        },
+                                    )
+                                    .when(
+                                        stream_state.status == StreamStatus::Connected
+                                            || stream_state.status == StreamStatus::Connecting,
+                                        |this| {
+                                            this.child(
+                                                ui::button_base(
+                                                    "stream-disconnect",
+                                                    "Disconnect",
+                                                    false,
+                                                    ButtonStyle::Tinted(ui::TintColor::Error),
+                                                    theme,
+                                                )
+                                                .on_click(cx.listener(
+                                                    |this, event, window, cx| {
+                                                        this.stop_stream(event, window, cx);
+                                                    },
+                                                )),
+                                            )
+                                        },
+                                    ),
+                            ),
+                    )
+                    // Search bar
+                    .child(
+                        div()
+                            .px(spacing.base12())
+                            .py(spacing.base04())
+                            .border_b_1()
+                            .border_color(theme.border_variant)
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(spacing.base04())
+                                    .child(
+                                        div()
+                                            .text_ui_sm(typography)
+                                            .text_color(theme.text_muted)
+                                            .child("Search:"),
+                                    )
+                                    .child(search_input.clone().into_any_element()),
                             ),
                     ),
             )
@@ -4757,7 +4930,7 @@ impl ApiClientApp {
                         .child(format!("Error: {}", error)),
                 )
             })
-            // Message list — only visible items are rendered by GPUI
+            // Message list
             .child(
                 div()
                     .relative()
@@ -4796,11 +4969,40 @@ impl ApiClientApp {
             return div().into_any_element();
         };
 
+        // Binary display mode (hex vs text)
+        let show_hex = self
+            .stream_show_hex
+            .get(&request_id)
+            .copied()
+            .unwrap_or(true);
+        let display_body: SharedString = if msg.is_binary && !show_hex {
+            msg.binary_utf8.clone().unwrap_or(msg.data.clone())
+        } else {
+            msg.data.clone()
+        };
+
+        // Search highlight
+        let search_query = self
+            .stream_search_queries
+            .get(&request_id)
+            .cloned()
+            .unwrap_or_default();
+        let matches_search = search_query.is_empty()
+            || display_body
+                .to_lowercase()
+                .contains(&search_query.to_lowercase());
+        let search_highlight = |body: SharedString| -> SharedString {
+            if search_query.is_empty() {
+                return body;
+            }
+            body
+        };
+
         let is_expanded = self
             .stream_expanded_messages
             .contains(&(request_id, msg_idx));
-        let lines_count = msg.data.split('\n').count();
-        let is_large = lines_count > 1 || msg.data.len() > 120;
+        let lines_count = display_body.split('\n').count();
+        let is_large = lines_count > 1 || display_body.len() > 120;
 
         fn format_wall_clock_time(timestamp_ms: u64) -> Option<SharedString> {
             let secs = timestamp_ms / 1000;
@@ -4825,20 +5027,26 @@ impl ApiClientApp {
             ""
         };
         let timestamp_label = match &time_str {
-            Some(t) => format!("{}[{}] {}", header_chevron, t, dir_arrow),
-            None => format!("{}[00:00:00] {}", header_chevron, dir_arrow),
+            Some(t) => format!(
+                "{}[{}] {} {}b",
+                header_chevron, t, dir_arrow, msg.size_bytes
+            ),
+            None => format!(
+                "{}[00:00:00] {} {}b",
+                header_chevron, dir_arrow, msg.size_bytes
+            ),
         };
 
         let formatted_data: SharedString = if msg.is_json {
-            serde_json::to_string_pretty(&msg.data)
-                .unwrap_or(msg.data.to_string())
+            serde_json::to_string_pretty(&display_body)
+                .unwrap_or_else(|_| display_body.to_string())
                 .into()
         } else {
-            msg.data.clone()
+            search_highlight(display_body.clone())
         };
 
         let display_data: SharedString = if is_large && !is_expanded {
-            let first_line = msg.data.lines().next().unwrap_or("").trim_end();
+            let first_line = display_body.lines().next().unwrap_or("").trim_end();
             let truncated = if first_line.len() > 120 {
                 format!("{}...", &first_line[..120])
             } else if lines_count > 1 {
@@ -4854,9 +5062,12 @@ impl ApiClientApp {
         let msg_data_for_copy = formatted_data;
         let toggle_key = (request_id, msg_idx);
 
+        let msg_opacity = if matches_search { 1.0 } else { 0.35 };
+
         div()
             .flex()
             .flex_col()
+            .opacity(msg_opacity)
             .child(
                 div()
                     .id(("stream-header", msg_idx))

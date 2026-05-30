@@ -118,6 +118,8 @@ async fn connect_ws_async(
             size_bytes: 0,
             timestamp_ms: 0,
             received_at: now_epoch_ms(),
+            is_binary: false,
+            binary_utf8: None,
         })
         .await;
 
@@ -143,21 +145,26 @@ async fn connect_ws_async(
                                     size_bytes: size,
                                     timestamp_ms: start.elapsed().as_millis() as u64,
                                     received_at: now_epoch_ms(),
+                                    is_binary: false,
+                                    binary_utf8: None,
                                 };
                                 if message_tx.send(msg).await.is_err() {
                                     break;
                                 }
                             }
                             Message::Binary(bytes) => {
-                                let data = format_bytes_hex(&bytes);
+                                let hex = format_bytes_hex(&bytes);
+                                let utf8 = String::from_utf8_lossy(&bytes).to_string();
                                 let msg = StreamMessage {
                                     direction: StreamDirection::Received,
                                     event_type: None,
                                     event_id: None,
-                                    data,
+                                    data: hex,
                                     size_bytes: bytes.len(),
                                     timestamp_ms: start.elapsed().as_millis() as u64,
                                     received_at: now_epoch_ms(),
+                                    is_binary: true,
+                                    binary_utf8: Some(utf8),
                                 };
                                 if message_tx.send(msg).await.is_err() {
                                     break;

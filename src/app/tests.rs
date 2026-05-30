@@ -2556,6 +2556,8 @@ fn test_stream_message_from_domain() {
         size_bytes: 9,
         timestamp_ms: 1000,
         received_at: 1700000000000,
+        is_binary: false,
+        binary_utf8: None,
     };
 
     let app_msg = StreamMessage::from_domain(domain_msg);

@@ -393,6 +393,8 @@ async fn connect_sse_async(
                     size_bytes: 0,
                     timestamp_ms: 0,
                     received_at: 0,
+                    is_binary: false,
+                    binary_utf8: None,
                 })
                 .await;
         }
@@ -479,5 +481,7 @@ pub fn parse_sse_event(event_data: &str, start_time: Instant) -> Result<StreamMe
         size_bytes,
         timestamp_ms,
         received_at,
+        is_binary: false,
+        binary_utf8: None,
     })
 }

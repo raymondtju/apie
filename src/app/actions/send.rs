@@ -590,6 +590,7 @@ impl ApiClientApp {
                         }
                         let old_count = state.messages.len();
                         let mut count = 0usize;
+                        let should_scroll = state.pin_to_bottom;
                         for msg in batch {
                             let app_msg = StreamMessage::from_domain(msg);
                             // Skip the zero-data handshake message from connect_sse.
@@ -601,6 +602,13 @@ impl ApiClientApp {
                         }
                         if count > 0 {
                             app.stream_list_state.splice(old_count..old_count, count);
+                            if should_scroll {
+                                let last = state.messages.len().saturating_sub(1);
+                                app.stream_list_state.scroll_to(gpui::ListOffset {
+                                    item_ix: last,
+                                    offset_in_item: gpui::Pixels::ZERO,
+                                });
+                            }
                         }
                         // Evict oldest messages when the cap is exceeded.
                         let len = state.messages.len();
@@ -619,6 +627,13 @@ impl ApiClientApp {
                                 }
                             }
                             app.stream_list_state.reset(state.messages.len());
+                            if should_scroll {
+                                let last = state.messages.len().saturating_sub(1);
+                                app.stream_list_state.scroll_to(gpui::ListOffset {
+                                    item_ix: last,
+                                    offset_in_item: gpui::Pixels::ZERO,
+                                });
+                            }
                         }
                         if count > 0 {
                             cx.notify();
@@ -655,5 +670,69 @@ impl ApiClientApp {
         }
         self.status_line = "Stream stopped".into();
         cx.notify();
+    }
+
+    /// Save all stream messages for a request to a plain-text file.
+    pub(crate) fn save_stream_session(&mut self, request_id: usize, cx: &mut Context<Self>) {
+        let Some(state) = self.stream_state.get(&request_id) else {
+            self.status_line = "No stream session to save.".into();
+            cx.notify();
+            return;
+        };
+        if state.messages.is_empty() {
+            self.status_line = "No messages to save.".into();
+            cx.notify();
+            return;
+        }
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let filename = format!("stream-session-{request_id}-{timestamp}.txt");
+
+        let mut output = String::new();
+        for (i, msg) in state.messages.iter().enumerate() {
+            let dir = match msg.direction {
+                domain::StreamDirection::Sent => "SENT",
+                domain::StreamDirection::Received => "RECV",
+            };
+            let ts = format_wall_clock_time(msg.received_at)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "--:--:--".to_string());
+            output.push_str(&format!(
+                "[#{}] {} {} ({} bytes)\n",
+                i + 1,
+                ts,
+                dir,
+                msg.size_bytes
+            ));
+            if let Some(event_type) = &msg.event_type {
+                output.push_str(&format!("  event: {event_type}\n"));
+            }
+            output.push_str(&format!("  {}\n\n", msg.data));
+        }
+
+        match std::fs::write(&filename, &output) {
+            Ok(_) => {
+                self.status_line = format!("Stream session saved to {filename}").into();
+            }
+            Err(e) => {
+                self.status_line = format!("Failed to save stream session: {e}").into();
+            }
+        }
+        cx.notify();
+    }
+}
+
+fn format_wall_clock_time(timestamp_ms: u64) -> Option<String> {
+    let secs = timestamp_ms / 1000;
+    if secs > 0 {
+        let hours = (secs / 3600) % 24;
+        let minutes = (secs / 60) % 60;
+        let seconds = secs % 60;
+        Some(format!("{:02}:{:02}:{:02}", hours, minutes, seconds))
+    } else {
+        None
     }
 }

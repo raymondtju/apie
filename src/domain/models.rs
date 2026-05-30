@@ -240,6 +240,9 @@ pub struct StreamMessage {
     pub timestamp_ms: u64,
     /// Wall-clock time when the event was received, in Unix epoch milliseconds.
     pub received_at: u64,
+    pub is_binary: bool,
+    /// For binary frames — UTF-8 lossy conversion for text preview.
+    pub binary_utf8: Option<String>,
 }
 
 #[derive(Clone, Debug)]

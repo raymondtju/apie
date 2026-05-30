@@ -170,6 +170,8 @@ fn stream_message_fields() {
         size_bytes: 7,
         timestamp_ms: 1000,
         received_at: 0,
+        is_binary: false,
+        binary_utf8: None,
     };
     assert_eq!(msg.direction, StreamDirection::Received);
     assert_eq!(msg.event_type.as_deref(), Some("test"));

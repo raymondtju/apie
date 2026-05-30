@@ -147,6 +147,7 @@ impl Auth {
             },
         }
     }
+
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -405,6 +406,8 @@ pub(crate) struct StreamMessage {
     pub(crate) timestamp_ms: u64,
     pub(crate) received_at: u64,
     pub(crate) is_json: bool,
+    pub(crate) is_binary: bool,
+    pub(crate) binary_utf8: Option<SharedString>,
 }
 
 impl StreamMessage {
@@ -419,6 +422,8 @@ impl StreamMessage {
             timestamp_ms: msg.timestamp_ms,
             received_at: msg.received_at,
             is_json,
+            is_binary: msg.is_binary,
+            binary_utf8: msg.binary_utf8.map(Into::into),
         }
     }
 }
@@ -432,6 +437,8 @@ pub(crate) struct StreamState {
     pub(crate) started_at: Option<u64>,
     /// Wall-clock Unix epoch millis of the most recently received message.
     pub(crate) last_received_at: Option<u64>,
+    /// Whether to auto-scroll to the latest message.
+    pub(crate) pin_to_bottom: bool,
 }
 
 impl StreamState {
@@ -442,6 +449,7 @@ impl StreamState {
             error: None,
             started_at: None,
             last_received_at: None,
+            pin_to_bottom: true,
         }
     }
 }

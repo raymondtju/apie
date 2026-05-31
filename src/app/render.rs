@@ -16,27 +16,6 @@ impl ApiClientApp {
         ui::button_base(("button", id), label, active, style, theme).on_click(cx.listener(on_click))
     }
 
-    fn render_tab_button(
-        &mut self,
-        key: &'static str,
-        label: impl Into<SharedString>,
-        active: bool,
-        style: ButtonStyle,
-        theme: AppTheme,
-        on_click: impl Fn(&mut Self, &gpui::ClickEvent, &mut Window, &mut Context<Self>) + 'static,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let label = label.into();
-        let handle = self.tab_handle(format!("button:{key}"), cx);
-        let id = key.bytes().fold(0usize, |hash, byte| {
-            hash.wrapping_mul(31).wrapping_add(byte as usize)
-        });
-        ui::button_base(("button", id), label, active, style, theme)
-            .track_focus(&handle)
-            .tab_stop(true)
-            .on_click(cx.listener(on_click))
-    }
-
     fn render_scoped_button(
         scope: &'static str,
         label: impl Into<SharedString>,

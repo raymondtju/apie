@@ -39,7 +39,7 @@ fn resolves_environment_params_headers_auth_and_body_before_send() {
         deprecated: false,
     };
 
-    let resolved = request.to_resolved_domain(&environment).unwrap();
+    let resolved = request.to_resolved_domain(&environment, None).unwrap();
 
     assert_eq!(resolved.url, "https://api.example.test/users");
     assert_eq!(resolved.query[0].value, "abc");
@@ -2563,10 +2563,8 @@ fn test_stream_message_from_domain() {
     let app_msg = StreamMessage::from_domain(domain_msg);
     assert_eq!(app_msg.direction, domain::StreamDirection::Received);
     assert_eq!(app_msg.event_type, Some("message".into()));
-    assert_eq!(app_msg.event_id, Some("123".into()));
     assert_eq!(app_msg.data.as_ref(), "test data");
     assert_eq!(app_msg.size_bytes, 9);
-    assert_eq!(app_msg.timestamp_ms, 1000);
     assert_eq!(app_msg.received_at, 1700000000000);
 }
 

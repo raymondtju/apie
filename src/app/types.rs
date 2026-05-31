@@ -74,7 +74,6 @@ impl Method {
 }
 
 #[derive(Clone)]
-#[allow(dead_code)]
 pub(crate) enum Auth {
     None,
     Basic {
@@ -102,43 +101,27 @@ impl Auth {
         }
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn summary(&self) -> SharedString {
-        match self {
-            Self::None => "No auth".into(),
-            Self::Basic { username, .. } => format!("Basic auth: {username}").into(),
-            Self::Bearer { label, secret_ref } => {
-                format!("Bearer token: {label} ({secret_ref})").into()
-            }
-            Self::ApiKey {
-                name,
-                secret_ref,
-                location,
-            } => format!("API key: {name} ({secret_ref}) in {}", location.label()).into(),
-        }
-    }
-
     pub(crate) fn from_domain(auth: domain::Auth) -> Self {
         match auth {
             domain::Auth::None => Self::None,
             domain::Auth::Basic {
-                username_ref,
-                password_ref,
+                username_key,
+                password_key,
             } => Self::Basic {
-                username: username_ref.into(),
-                password: password_ref.into(),
+                username: username_key.into(),
+                password: password_key.into(),
             },
-            domain::Auth::Bearer { token_ref } => Self::Bearer {
+            domain::Auth::Bearer { token_key } => Self::Bearer {
                 label: "token".into(),
-                secret_ref: token_ref.into(),
+                secret_ref: token_key.into(),
             },
             domain::Auth::ApiKey {
                 name,
-                value_ref,
+                value_key,
                 location,
             } => Self::ApiKey {
                 name: name.into(),
-                secret_ref: value_ref.into(),
+                secret_ref: value_key.into(),
                 location: match location {
                     domain::ApiKeyLocation::Header => AuthLocation::Header,
                     domain::ApiKeyLocation::Query => AuthLocation::Query,
@@ -169,15 +152,6 @@ impl AuthLocation {
             Self::Header => "header",
             Self::Query => "query",
             Self::Cookie => "cookie",
-        }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn next(self) -> Self {
-        match self {
-            Self::Header => Self::Query,
-            Self::Query => Self::Cookie,
-            Self::Cookie => Self::Header,
         }
     }
 }
@@ -400,10 +374,8 @@ pub(crate) const MAX_CONCURRENT_STREAMS: usize = 5;
 pub(crate) struct StreamMessage {
     pub(crate) direction: domain::StreamDirection,
     pub(crate) event_type: Option<SharedString>,
-    pub(crate) event_id: Option<SharedString>,
     pub(crate) data: SharedString,
     pub(crate) size_bytes: usize,
-    pub(crate) timestamp_ms: u64,
     pub(crate) received_at: u64,
     pub(crate) is_json: bool,
     pub(crate) is_binary: bool,
@@ -416,10 +388,8 @@ impl StreamMessage {
         Self {
             direction: msg.direction,
             event_type: msg.event_type.map(Into::into),
-            event_id: msg.event_id.map(Into::into),
             data: msg.data.into(),
             size_bytes: msg.size_bytes,
-            timestamp_ms: msg.timestamp_ms,
             received_at: msg.received_at,
             is_json,
             is_binary: msg.is_binary,
@@ -1399,11 +1369,11 @@ impl Request {
         request.auth = match &self.auth {
             Auth::None => domain::Auth::None,
             Auth::Basic { username, password } => domain::Auth::Basic {
-                username_ref: username.to_string(),
-                password_ref: password.to_string(),
+                username_key: username.to_string(),
+                password_key: password.to_string(),
             },
             Auth::Bearer { secret_ref, .. } => domain::Auth::Bearer {
-                token_ref: secret_ref.to_string(),
+                token_key: secret_ref.to_string(),
             },
             Auth::ApiKey {
                 name,
@@ -1411,7 +1381,7 @@ impl Request {
                 location,
             } => domain::Auth::ApiKey {
                 name: name.to_string(),
-                value_ref: secret_ref.to_string(),
+                value_key: secret_ref.to_string(),
                 location: match location {
                     AuthLocation::Header => domain::ApiKeyLocation::Header,
                     AuthLocation::Query => domain::ApiKeyLocation::Query,
@@ -1449,6 +1419,7 @@ impl Request {
     pub(crate) fn to_resolved_domain(
         &self,
         environment: &Environment,
+        secret_store: Option<&dyn domain::secrets::SecretStore>,
     ) -> Result<domain::Request, String> {
         let mut request = self.to_domain();
         request.url = resolve_template(&request.url, environment)?;
@@ -1465,7 +1436,7 @@ impl Request {
                 value: resolve_template(&value, environment)?,
             },
         };
-        request.auth = resolve_auth(&request.auth, environment)?;
+        request.auth = resolve_auth(&request.auth, environment, secret_store)?;
         apply_auth(&mut request);
         Ok(request)
     }

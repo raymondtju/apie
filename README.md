@@ -41,6 +41,7 @@ src/
     persistence.rs       JSON load/save with format versioning and migration
     preview.rs           Synthetic response helper for offline/demo use
     error.rs             Core error/result types
+    secrets.rs           SecretStore trait, MemorySecretStore, and key helpers
   http/
     mod.rs               Custom HTTP client (hyper + tokio-rustls) with per-phase timing + SSE
     ws.rs                WebSocket client (tokio-tungstenite)

@@ -29,7 +29,7 @@ impl ApiClientApp {
         let request_id = request.id;
         let request_name = request.name.clone();
         let environment = &self.workspace.environments[self.workspace.active_environment];
-        let resolved = match request.to_resolved_domain(environment) {
+        let resolved = match request.to_resolved_domain(environment, Some(&*self.secret_store)) {
             Ok(request) => request,
             Err(error) => {
                 self.status_line = error.into();
@@ -393,7 +393,7 @@ impl ApiClientApp {
 
         let request = self.active_request().unwrap().clone();
         let environment = &self.workspace.environments[self.workspace.active_environment];
-        let request = match request.to_resolved_domain(environment) {
+        let request = match request.to_resolved_domain(environment, Some(&*self.secret_store)) {
             Ok(request) => request,
             Err(error) => {
                 self.status_line = error.into();

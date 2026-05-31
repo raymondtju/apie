@@ -1,4 +1,8 @@
 use super::*;
+use domain::secrets::SecretStore;
+
+/// Prefix for secret store keys.
+const SECRET_KEY_PREFIX: &str = "apie/";
 
 pub(crate) fn resolve_headers(
     headers: &[domain::Header],
@@ -19,26 +23,39 @@ pub(crate) fn resolve_headers(
 pub(crate) fn resolve_auth(
     auth: &domain::Auth,
     environment: &Environment,
+    secret_store: Option<&dyn SecretStore>,
 ) -> Result<domain::Auth, String> {
+    let resolve = |value: &str| -> Result<String, String> {
+        match secret_store {
+            Some(store) if value.starts_with(SECRET_KEY_PREFIX) => match store.get(value) {
+                Ok(Some(secret)) => Ok(secret),
+                Ok(None) => Err(format!(
+                    "Secret key `{value}` not found in secret store."
+                )),
+                Err(e) => Err(format!("Failed to read secret `{value}`: {e}")),
+            },
+            _ => resolve_template(value, environment),
+        }
+    };
     Ok(match auth {
         domain::Auth::None => domain::Auth::None,
         domain::Auth::Basic {
-            username_ref,
-            password_ref,
+            username_key,
+            password_key,
         } => domain::Auth::Basic {
-            username_ref: resolve_template(username_ref, environment)?,
-            password_ref: resolve_template(password_ref, environment)?,
+            username_key: resolve(username_key)?,
+            password_key: resolve(password_key)?,
         },
-        domain::Auth::Bearer { token_ref } => domain::Auth::Bearer {
-            token_ref: resolve_template(token_ref, environment)?,
+        domain::Auth::Bearer { token_key } => domain::Auth::Bearer {
+            token_key: resolve(token_key)?,
         },
         domain::Auth::ApiKey {
             name,
-            value_ref,
+            value_key,
             location,
         } => domain::Auth::ApiKey {
             name: resolve_template(name, environment)?,
-            value_ref: resolve_template(value_ref, environment)?,
+            value_key: resolve(value_key)?,
             location: location.clone(),
         },
     })
@@ -73,32 +90,32 @@ pub(crate) fn apply_auth(request: &mut domain::Request) {
     match &request.auth {
         domain::Auth::None => {}
         domain::Auth::Basic {
-            username_ref,
-            password_ref,
+            username_key,
+            password_key,
         } => request.headers.push(domain::Header::new(
             "Authorization",
             format!(
                 "Basic {}",
-                base64_encode(format!("{username_ref}:{password_ref}").as_bytes())
+                base64_encode(format!("{username_key}:{password_key}").as_bytes())
             ),
         )),
-        domain::Auth::Bearer { token_ref } => request.headers.push(domain::Header::new(
+        domain::Auth::Bearer { token_key } => request.headers.push(domain::Header::new(
             "Authorization",
-            format!("Bearer {token_ref}"),
+            format!("Bearer {token_key}"),
         )),
         domain::Auth::ApiKey {
             name,
-            value_ref,
+            value_key,
             location,
         } => match location {
             domain::ApiKeyLocation::Header => {
-                request.headers.push(domain::Header::new(name, value_ref))
+                request.headers.push(domain::Header::new(name, value_key))
             }
             domain::ApiKeyLocation::Query => {
-                request.query.push(domain::Header::new(name, value_ref))
+                request.query.push(domain::Header::new(name, value_key))
             }
             domain::ApiKeyLocation::Cookie => {
-                let cookie = format!("{name}={value_ref}");
+                let cookie = format!("{name}={value_key}");
                 if let Some(existing) = request
                     .headers
                     .iter_mut()

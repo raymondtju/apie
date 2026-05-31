@@ -405,6 +405,7 @@ pub(crate) struct ApiClientApp {
     stream_list_scrollbar: Entity<ui::ListScrollbar>,
     watched_imports: Vec<WatchedImport>,
     focus_handles: BTreeMap<String, FocusHandle>,
+    secret_store: Box<dyn domain::secrets::SecretStore>,
 }
 
 pub(crate) struct FindState {
@@ -538,6 +539,7 @@ impl ApiClientApp {
             stream_list_scrollbar,
             watched_imports: Vec::new(),
             focus_handles: BTreeMap::new(),
+            secret_store: Box::new(domain::secrets::MemorySecretStore::new()),
         };
         app.refresh_workspaces_list();
         app

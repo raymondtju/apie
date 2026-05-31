@@ -749,8 +749,8 @@ mod tests {
             "https://api.example.com/secure",
             |req| {
                 req.auth = domain::Auth::Basic {
-                    username_ref: "admin".into(),
-                    password_ref: "secret".into(),
+                    username_key: "admin".into(),
+                    password_key: "secret".into(),
                 };
             },
         );
@@ -784,7 +784,7 @@ mod tests {
             "https://api.example.com/token",
             |req| {
                 req.auth = domain::Auth::Bearer {
-                    token_ref: "mytoken".into(),
+                    token_key: "mytoken".into(),
                 };
             },
         );
@@ -818,7 +818,7 @@ mod tests {
             |req| {
                 req.auth = domain::Auth::ApiKey {
                     name: "X-API-Key".into(),
-                    value_ref: "abc123".into(),
+                    value_key: "abc123".into(),
                     location: domain::ApiKeyLocation::Header,
                 };
             },

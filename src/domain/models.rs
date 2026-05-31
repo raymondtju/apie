@@ -40,15 +40,19 @@ impl From<&str> for Method {
 pub enum Auth {
     None,
     Basic {
-        username_ref: String,
-        password_ref: String,
+        #[serde(alias = "username_ref")]
+        username_key: String,
+        #[serde(alias = "password_ref")]
+        password_key: String,
     },
     Bearer {
-        token_ref: String,
+        #[serde(alias = "token_ref")]
+        token_key: String,
     },
     ApiKey {
         name: String,
-        value_ref: String,
+        #[serde(alias = "value_ref")]
+        value_key: String,
         location: ApiKeyLocation,
     },
 }

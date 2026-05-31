@@ -298,13 +298,13 @@ fn resolve_auth(
                     SecurityScheme::HTTP { scheme, .. } => {
                         if scheme.eq_ignore_ascii_case("basic") {
                             return domain::Auth::Basic {
-                                username_ref: String::new(),
-                                password_ref: String::new(),
+                                username_key: String::new(),
+                                password_key: String::new(),
                             };
                         }
                         if scheme.eq_ignore_ascii_case("bearer") {
                             return domain::Auth::Bearer {
-                                token_ref: String::new(),
+                                token_key: String::new(),
                             };
                         }
                     }
@@ -316,7 +316,7 @@ fn resolve_auth(
                         };
                         return domain::Auth::ApiKey {
                             name: name.clone(),
-                            value_ref: name.clone(),
+                            value_key: name.clone(),
                             location: loc,
                         };
                     }

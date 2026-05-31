@@ -2,6 +2,7 @@ pub mod error;
 pub mod models;
 pub mod persistence;
 pub(crate) mod preview;
+pub mod secrets;
 pub mod workspace;
 
 pub use error::{ClientError, Result};

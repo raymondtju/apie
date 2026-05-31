@@ -1083,15 +1083,15 @@ impl ApiClientApp {
             let domain_auth = match &dialog.auth_type {
                 Auth::None => domain::Auth::None,
                 Auth::Bearer { .. } => domain::Auth::Bearer {
-                    token_ref: dialog.auth_token_input.read(cx).value().to_string(),
+                    token_key: dialog.auth_token_input.read(cx).value().to_string(),
                 },
                 Auth::Basic { .. } => domain::Auth::Basic {
-                    username_ref: dialog.auth_username_input.read(cx).value().to_string(),
-                    password_ref: dialog.auth_password_input.read(cx).value().to_string(),
+                    username_key: dialog.auth_username_input.read(cx).value().to_string(),
+                    password_key: dialog.auth_password_input.read(cx).value().to_string(),
                 },
                 Auth::ApiKey { location, .. } => domain::Auth::ApiKey {
                     name: dialog.auth_name_input.read(cx).value().to_string(),
-                    value_ref: dialog.auth_value_input.read(cx).value().to_string(),
+                    value_key: dialog.auth_value_input.read(cx).value().to_string(),
                     location: match location {
                         AuthLocation::Header => domain::ApiKeyLocation::Header,
                         AuthLocation::Query => domain::ApiKeyLocation::Query,
